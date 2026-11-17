@@ -1,0 +1,455 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>서울 조례 길잡이</title>
+<meta name="description" content="서울특별시 조례를 근거 조항과 함께 쉬운 말로 알려 드립니다.">
+<style>
+  :root {
+    --bg: #f5f7fa;
+    --surface: #ffffff;
+    --surface-2: #eef2f7;
+    --text: #18212f;
+    --muted: #5b6676;
+    --line: #dde3eb;
+    --brand: #0b5cad;
+    --brand-ink: #ffffff;
+    --brand-soft: #e6f0fb;
+    --ok: #0f7b5f;
+    --warn-bg: #fff7e6;
+    --warn-line: #f3c46b;
+    --warn-ink: #7a4b00;
+    --mark: #fff1b8;
+    --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 4px 16px rgba(16, 24, 40, .06);
+    --radius: 14px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f141b; --surface: #171e27; --surface-2: #1f2834; --text: #e7ecf3; --muted: #9aa6b6;
+      --line: #2a3542; --brand: #5aa2f0; --brand-ink: #0b1220; --brand-soft: #182a40; --ok: #4cc59e;
+      --warn-bg: #2a2212; --warn-line: #8a6a2a; --warn-ink: #f2c879; --mark: #4a3f12;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 6px 20px rgba(0,0,0,.35);
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: "Pretendard", "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", system-ui, sans-serif;
+    font-size: 16px; line-height: 1.65; word-break: keep-all; overflow-wrap: anywhere;
+  }
+  a { color: var(--brand); }
+  button { font: inherit; }
+  .wrap { max-width: 780px; margin: 0 auto; padding: 0 16px; }
+
+  header.top { background: var(--surface); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 5; }
+  header.top .wrap { display: flex; align-items: center; gap: 10px; height: 60px; }
+  .newchat { margin-left: auto; border: 1px solid var(--line); background: var(--surface); color: var(--text); border-radius: 10px;
+    padding: 6px 12px; font-size: 14px; cursor: pointer; min-height: 38px; display: none; align-items: center; gap: 6px; }
+  .newchat:hover { border-color: var(--brand); color: var(--brand); }
+  .newchat:focus-visible { outline: 3px solid var(--brand); outline-offset: 2px; }
+  body.chatting .newchat { display: inline-flex; }
+  .logo { width: 30px; height: 30px; border-radius: 8px; background: var(--brand); display: grid; place-items: center; flex: none; }
+  .logo svg { width: 18px; height: 18px; }
+  .brand { font-weight: 700; font-size: 17px; letter-spacing: -.01em; }
+  .brand small { display: block; font-weight: 400; font-size: 12px; color: var(--muted); line-height: 1.2; }
+
+  main.wrap { padding-bottom: 150px; }
+  .hero { padding: 44px 0 8px; }
+  body.chatting .hero { display: none; }
+  .hero h1 { font-size: clamp(24px, 4.6vw, 32px); line-height: 1.3; margin: 0 0 8px; letter-spacing: -.02em; }
+  .hero p { margin: 0; color: var(--muted); }
+  .hero p.note { margin-top: 22px; font-size: 13px; line-height: 1.6; }
+
+  /* 질문창: 화면 아래에 고정 */
+  .composer { position: fixed; left: 0; right: 0; bottom: 0; z-index: 5;
+    background: linear-gradient(to top, var(--bg) 72%, transparent); padding: 22px 0 calc(10px + env(safe-area-inset-bottom)); }
+  .disclaimer { margin: 8px 2px 0; font-size: 12px; color: var(--muted); text-align: center; line-height: 1.5; }
+  form.ask { background: var(--surface); border: 1.5px solid var(--line); border-radius: var(--radius);
+    box-shadow: var(--shadow); display: flex; align-items: flex-end; gap: 8px; padding: 10px 10px 10px 16px; transition: border-color .15s; }
+  form.ask:focus-within { border-color: var(--brand); }
+  form.ask textarea { flex: 1; border: 0; outline: 0; resize: none; background: transparent; color: var(--text);
+    font: inherit; font-size: 17px; line-height: 1.5; padding: 6px 0; max-height: 160px; min-height: 30px; }
+  form.ask textarea::placeholder { color: var(--muted); }
+  .btn { border: 0; border-radius: 10px; background: var(--brand); color: var(--brand-ink); font-weight: 700;
+    padding: 10px 18px; cursor: pointer; white-space: nowrap; min-height: 44px; }
+  .btn:disabled { opacity: .5; cursor: progress; }
+  .btn:focus-visible, .chip:focus-visible, .cite:focus-visible, .x:focus-visible { outline: 3px solid var(--brand); outline-offset: 2px; }
+
+  .topics { margin: 26px 0 6px; }
+  .topics .label { font-size: 13px; color: var(--muted); margin-bottom: 8px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip { border: 1px solid var(--line); background: var(--surface); color: var(--text); border-radius: 999px;
+    padding: 7px 13px; font-size: 14px; cursor: pointer; display: inline-flex; gap: 6px; align-items: center; min-height: 36px; }
+  .chip:hover { border-color: var(--brand); color: var(--brand); }
+  .chip b { font-weight: 600; color: var(--muted); }
+
+  #feed { padding: 20px 0 8px; display: flex; flex-direction: column; gap: 26px; }
+  .qa { animation: rise .25s ease-out; scroll-margin-top: 76px; }
+  @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+  /* 사용자 질문: 오른쪽 말풍선 */
+  .q { width: fit-content; max-width: 85%; margin: 0 0 12px auto; background: var(--brand); color: var(--brand-ink);
+    padding: 10px 15px; border-radius: 18px 18px 4px 18px; font-weight: 600; font-size: 16.5px; white-space: pre-wrap; }
+  /* 답변: 왼쪽, 길잡이 표시 */
+  .who { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700; color: var(--muted); margin: 0 0 6px; }
+  .who .logo { width: 24px; height: 24px; border-radius: 7px; }
+  .who .logo svg { width: 14px; height: 14px; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 4px var(--radius) var(--radius) var(--radius); box-shadow: var(--shadow); padding: 18px 18px 16px; }
+  .answer { font-size: 17px; margin: 0; }
+  .answer strong { color: var(--brand); }
+  .meta-title { font-size: 13px; font-weight: 700; color: var(--muted); margin: 16px 0 8px; letter-spacing: .02em; }
+  .cites { display: flex; flex-direction: column; gap: 8px; }
+  .cite { text-align: left; border: 1px solid var(--line); background: var(--surface-2); color: var(--text); border-radius: 10px;
+    padding: 10px 12px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; gap: 10px; min-height: 44px; }
+  .cite:hover { border-color: var(--brand); }
+  .cite .law { display: block; font-size: 12.5px; color: var(--muted); }
+  .cite .art { font-weight: 700; }
+  .cite .go { color: var(--brand); font-size: 13px; white-space: nowrap; }
+  .foot { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--line);
+    font-size: 13px; color: var(--muted); align-items: center; }
+  .foot .ok { color: var(--ok); font-weight: 600; }
+
+  .unknown { background: var(--warn-bg); border-color: var(--warn-line); }
+  .unknown h3 { margin: 0 0 6px; font-size: 17px; color: var(--warn-ink); }
+  .unknown ul { margin: 8px 0 0; padding-left: 20px; color: var(--text); }
+  .unknown li { margin: 2px 0; }
+
+  .loading { display: flex; gap: 14px; align-items: center; color: var(--muted); }
+  .spin { width: 22px; height: 22px; border-radius: 50%; border: 3px solid var(--line); border-top-color: var(--brand); animation: spin .9s linear infinite; flex: none; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .steps { font-size: 14px; }
+  .steps .now { color: var(--text); font-weight: 600; }
+
+
+  /* 원문 패널: 넓은 화면은 오른쪽, 좁은 화면은 아래에서 올라옴 */
+  .scrim { position: fixed; inset: 0; background: rgba(10, 16, 26, .45); opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 10; }
+  .scrim.on { opacity: 1; pointer-events: auto; }
+  aside.panel { position: fixed; z-index: 11; background: var(--surface); box-shadow: -8px 0 30px rgba(0,0,0,.18);
+    top: 0; right: 0; height: 100%; width: min(520px, 100%); transform: translateX(105%); transition: transform .25s ease;
+    display: flex; flex-direction: column; }
+  aside.panel.on { transform: none; }
+  @media (max-width: 640px) {
+    aside.panel { top: auto; bottom: 0; height: 86vh; width: 100%; border-radius: 18px 18px 0 0; transform: translateY(105%); }
+    aside.panel.on { transform: none; }
+  }
+  .panel-head { padding: 16px 18px 12px; border-bottom: 1px solid var(--line); display: flex; gap: 12px; align-items: flex-start; }
+  .panel-head .t { flex: 1; min-width: 0; }
+  .panel-head .lawname { font-size: 13px; color: var(--muted); }
+  .panel-head h2 { margin: 2px 0 0; font-size: 19px; line-height: 1.35; }
+  .x { border: 0; background: var(--surface-2); color: var(--text); width: 40px; height: 40px; border-radius: 10px; cursor: pointer; flex: none; font-size: 20px; line-height: 1; }
+  .panel-body { padding: 14px 18px 24px; overflow: auto; flex: 1; }
+  .para { padding: 10px 12px; border-radius: 10px; margin: 0 0 8px; white-space: pre-line; font-size: 15.5px; }
+  .para.hl { background: var(--mark); box-shadow: inset 3px 0 0 #e0a800; }
+  .para.hl::before { content: "인용된 항"; display: block; font-size: 12px; font-weight: 700; color: var(--warn-ink); margin-bottom: 2px; }
+  .md table { border-collapse: collapse; width: 100%; font-size: 14px; margin: 8px 0 14px; display: block; overflow-x: auto; }
+  .md th, .md td { border: 1px solid var(--line); padding: 6px 8px; text-align: left; vertical-align: top; min-width: 64px; }
+  .md th { background: var(--surface-2); }
+  .md .num { white-space: nowrap; text-align: right; font-variant-numeric: tabular-nums; }
+  .md p, .md li { font-size: 14.5px; margin: 4px 0; }
+  .md h4 { margin: 14px 0 4px; font-size: 15px; }
+
+  /* 답변 카드 안의 별표 표 */
+  .annex { margin: 16px 0 2px; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  .annex-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 9px 12px;
+    background: var(--surface-2); font-size: 14px; font-weight: 700; }
+  .annex-head small { display: block; font-weight: 400; font-size: 12px; color: var(--muted); }
+  .annex-more { border: 1px solid var(--line); background: var(--surface); color: var(--brand); border-radius: 8px;
+    padding: 5px 10px; font-size: 13px; cursor: pointer; white-space: nowrap; min-height: 34px; }
+  .annex-more:focus-visible { outline: 3px solid var(--brand); outline-offset: 2px; }
+  .annex-body { max-height: 360px; overflow: auto; padding: 2px 12px 8px; }
+  .annex-body table { margin: 8px 0; }
+  .annex-body .unit { margin: 8px 0 0; font-size: 12.5px; color: var(--muted); }
+  .panel-foot { padding: 12px 18px 16px; border-top: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); flex-wrap: wrap; }
+  .panel-foot a.btn { text-decoration: none; display: inline-flex; align-items: center; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <div class="logo" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19V6a2 2 0 0 1 2-2h12v15H6a2 2 0 0 0-2 2"/><path d="M8 8h6M8 12h5"/></svg>
+    </div>
+    <div class="brand">서울 조례 길잡이<small>근거 조항과 함께 알려 드려요</small></div>
+    <button type="button" class="newchat" id="newchat">＋ 새 대화</button>
+  </div>
+</header>
+
+<main class="wrap">
+  <section class="hero">
+    <h1>서울시 규정, 궁금한 걸 물어보세요</h1>
+    <p>주차장 · 동물보호 · 자전거 · 도시공원 · 청년 · 금연 조례에서 근거를 찾아 쉬운 말로 답해 드립니다.</p>
+    <div class="topics">
+      <div class="label">이런 걸 물어볼 수 있어요</div>
+      <div class="chips" id="chips"></div>
+    </div>
+    <p class="note">서울특별시 조례 6종, 2026년 10월 1일 시행본 기준입니다. 자치구 조례·규칙은 다루지 않습니다.
+      이 답변은 이해를 돕기 위한 안내이며 법적 효력이 없습니다. 정확한 내용은 법제처 원문을 확인하세요.</p>
+  </section>
+
+  <section id="feed" aria-live="polite"></section>
+</main>
+
+<div class="composer">
+  <div class="wrap">
+    <form class="ask" id="ask" autocomplete="off">
+      <label for="q" class="sr-only">질문</label>
+      <textarea id="q" rows="1" maxlength="300" placeholder="궁금한 점을 물어보세요"></textarea>
+      <button class="btn" id="send" type="submit">질문하기</button>
+    </form>
+    <p class="disclaimer">서울시 조례 6종 · 2026.10.1 시행본 기준 · 법적 효력 없는 안내입니다</p>
+  </div>
+</div>
+
+<div class="scrim" id="scrim"></div>
+<aside class="panel" id="panel" role="dialog" aria-modal="true" aria-labelledby="ptitle" aria-hidden="true">
+  <div class="panel-head">
+    <div class="t"><div class="lawname" id="plaw"></div><h2 id="ptitle"></h2></div>
+    <button class="x" id="pclose" aria-label="원문 닫기">×</button>
+  </div>
+  <div class="panel-body" id="pbody"></div>
+  <div class="panel-foot">
+    <span id="pdate"></span>
+    <a class="btn" id="plink" target="_blank" rel="noopener">법제처에서 원문 보기 ↗</a>
+  </div>
+</aside>
+
+<script>
+const EXAMPLES = [
+  ["주차", "경차는 공영주차장 요금이 할인되나요?"],
+  ["주차", "장애인 할인과 다둥이 할인을 같이 받을 수 있나요?"],
+  ["동물", "유기견을 입양하면 등록수수료를 내야 하나요?"],
+  ["자전거", "자전거주차장은 돈을 내야 하나요?"],
+  ["공원", "65세인데 서울대공원 입장료가 면제되나요?"],
+  ["청년", "서울시에서 말하는 청년은 몇 살까지예요?"],
+  ["금연", "버스정류장에서 담배를 피우면 과태료가 있나요?"],
+];
+const $ = (s) => document.querySelector(s);
+const LOGO = document.querySelector("header .logo").outerHTML;
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const shortLaw = (s) => s.replace(/^서울특별시\s*/, "");
+
+// 인용 라벨 → [조례 이름, 조항]
+function splitLabel(label) {
+  const m = label.match(/^(.*?(?:조례\S*))\s+(제\d+조(?:의\d+)?(?:\s*제\d+항)?|별표.*)$/);
+  return m ? [shortLaw(m[1]), m[2]] : [shortLaw(label), ""];
+}
+
+// 금액·비율·나이 같은 숫자를 굵게 (근거를 바꾸지 않고 눈에 띄게만)
+function emphasize(text) {
+  // 분수(100분의 80)를 먼저 잡아야 '100분'만 굵어지지 않습니다
+  return esc(text).replace(/\d+분의\s*\d+|\d[\d,]*(?:\.\d+)?\s*(?:만원|천원|원|%|퍼센트|세|살|일|개월|년|시간|분|m|미터|명|배)/g, "<strong>$&</strong>");
+}
+
+const chips = $("#chips");
+EXAMPLES.forEach(([tag, q]) => {
+  const b = document.createElement("button");
+  b.type = "button"; b.className = "chip";
+  b.innerHTML = `<b>${esc(tag)}</b>${esc(q)}`;
+  b.onclick = () => { $("#q").value = q; ask(q); };
+  chips.appendChild(b);
+});
+
+const ta = $("#q");
+const grow = () => { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 160) + "px"; };
+ta.addEventListener("input", grow);
+ta.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); $("#ask").requestSubmit(); }
+});
+$("#ask").addEventListener("submit", (e) => { e.preventDefault(); const q = ta.value.trim(); if (q) ask(q); });
+
+let busy = false;
+async function ask(q) {
+  if (busy) return;
+  busy = true; $("#send").disabled = true;
+  document.body.classList.add("chatting");
+  ta.value = ""; grow();
+  const box = document.createElement("article");
+  box.className = "qa";
+  box.innerHTML = `<p class="q">${esc(q)}</p><div class="who">${LOGO}서울 조례 길잡이</div>
+    <div class="card"><div class="loading"><div class="spin"></div>
+    <div class="steps"><span class="now" data-step>조례에서 관련 조항을 찾고 있어요</span><br><span data-sec>0초</span></div></div></div>`;
+  $("#feed").append(box);
+  window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
+
+  const t0 = Date.now();
+  const steps = ["조례에서 관련 조항을 찾고 있어요", "근거 조항을 읽고 답을 쓰고 있어요", "답이 조문과 맞는지 확인하고 있어요", "조금 더 꼼꼼히 확인하고 있어요"];
+  const timer = setInterval(() => {
+    const s = Math.floor((Date.now() - t0) / 1000);
+    box.querySelector("[data-sec]").textContent = `${s}초`;
+    box.querySelector("[data-step]").textContent = steps[Math.min(Math.floor(s / 4), steps.length - 1)];
+  }, 500);
+
+  try {
+    const res = await fetch("/api/ask", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question: q }) });
+    if (!res.ok) throw new Error(res.status);
+    render(box, await res.json());
+  } catch (err) {
+    box.querySelector(".card").outerHTML = `<div class="card unknown"><h3>답변을 가져오지 못했어요</h3>
+      <p style="margin:0">잠시 후 다시 시도해 주세요. (${esc(err.message)})</p></div>`;
+  } finally {
+    clearInterval(timer); busy = false; $("#send").disabled = false;
+    // 답이 길면 질문부터 읽을 수 있게, 짧으면 끝까지 보이게
+    if (box.isConnected) box.scrollIntoView({ behavior: "smooth", block: "start" });
+    ta.focus();
+  }
+}
+
+$("#newchat").addEventListener("click", () => {
+  if (busy) return;
+  $("#feed").innerHTML = "";
+  document.body.classList.remove("chatting");
+  window.scrollTo({ top: 0 });
+  ta.value = ""; grow(); ta.focus();
+});
+
+function render(box, r) {
+  const card = box.querySelector(".card");
+  if (!r.citation || r.citation.length === 0) {
+    card.className = "card unknown";
+    card.innerHTML = `<h3>조례에서 근거를 찾지 못했어요</h3>
+      <p style="margin:0">근거 없이 추측해서 답하지 않도록, 확인할 수 없는 내용은 이렇게 알려 드려요.</p>
+      <ul><li>서울특별시 조례 6종(주차장·동물보호·자전거·도시공원·청년·금연)에 관한 질문인지 확인해 주세요.</li>
+      <li>자치구(○○구) 규정이나 법률·시행령에만 있는 내용은 해당 기관에 문의해 주세요.</li>
+      <li>대상과 상황을 조금 더 구체적으로 적으면 찾을 수 있을 때가 있어요.</li></ul>`;
+    return;
+  }
+  const cites = r.citation.map((c) => {
+    const [law, art] = splitLabel(c);
+    return `<button type="button" class="cite" data-label="${esc(c)}"><span><span class="law">${esc(law)}</span>
+      <span class="art">${esc(art || c)}</span></span><span class="go">원문 보기 →</span></button>`;
+  }).join("");
+  card.innerHTML = `<p class="answer">${emphasize(r.answer)}</p>
+    <div class="meta-title">근거 조항</div><div class="cites">${cites}</div>
+    <div class="foot"><span class="ok">✓ 조문과 대조해 확인한 답변</span>
+      ${r.effective_date ? `<span>시행일 ${esc(r.effective_date)}</span>` : ""}
+      ${r.source_url ? `<a href="${esc(r.source_url)}" target="_blank" rel="noopener">법제처 원문 ↗</a>` : ""}</div>`;
+  card.querySelectorAll(".cite").forEach((b) => b.addEventListener("click", () => openArticle(b.dataset.label, b)));
+  r.citation.filter((c) => /별표/.test(c)).forEach((c) => addAnnex(card, c));
+}
+
+// 인용에 별표가 있으면 표를 답변 바로 아래에 보여 줍니다
+async function addAnnex(card, label) {
+  try {
+    const res = await fetch("/api/article?label=" + encodeURIComponent(label));
+    if (!res.ok) return;
+    const a = await res.json();
+    const body = tablesOnly(a.markdown || "");
+    if (!body) return;
+    const [law] = splitLabel(label);
+    const sec = document.createElement("section");
+    sec.className = "annex";
+    sec.innerHTML = `<div class="annex-head"><span>${esc(a.title)}<small>${esc(law)}</small></span>
+      <button type="button" class="annex-more">비고까지 전체 보기</button></div>
+      <div class="annex-body md">${body}</div>`;
+    sec.querySelector(".annex-more").addEventListener("click", (e) => openArticle(label, e.currentTarget));
+    card.querySelector(".answer").after(sec);
+  } catch (err) { /* 표를 못 불러와도 답변과 근거 조항은 그대로 둡니다 */ }
+}
+
+// 별표 Markdown에서 단위 표기와 표만 뽑습니다 (긴 비고는 '전체 보기'에서)
+function tablesOnly(md) {
+  const lines = md.split("\n"); const out = []; let i = 0;
+  while (i < lines.length) {
+    const l = lines[i].trim();
+    if (l.startsWith("|")) {
+      const rows = [];
+      while (i < lines.length && lines[i].trim().startsWith("|")) { rows.push(lines[i].trim()); i++; }
+      const cells = (r) => r.replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
+      out.push(table(rows.filter((r) => !/^[\s|:-]+$/.test(r)).map(cells)));
+      continue;
+    }
+    if (/^\(단위/.test(l)) out.push(`<p class="unit">${esc(l)}</p>`);
+    i++;
+  }
+  return out.some((s) => s.startsWith("<table")) ? out.join("") : "";
+}
+
+// ---- 원문 패널 ----
+let lastFocus = null;
+async function openArticle(label, from) {
+  lastFocus = from;
+  const [law, art] = splitLabel(label);
+  $("#plaw").textContent = law; $("#ptitle").textContent = art || label;
+  $("#pbody").innerHTML = `<div class="loading"><div class="spin"></div>원문을 불러오고 있어요</div>`;
+  $("#plink").removeAttribute("href"); $("#pdate").textContent = "";
+  $("#panel").classList.add("on"); $("#scrim").classList.add("on"); $("#panel").setAttribute("aria-hidden", "false");
+  $("#pclose").focus();
+  try {
+    const res = await fetch("/api/article?label=" + encodeURIComponent(label));
+    if (!res.ok) throw new Error(res.status);
+    const a = await res.json();
+    $("#ptitle").textContent = a.title;
+    $("#plink").href = a.source_url;
+    $("#pdate").textContent = `시행일 ${a.effective_date}`;
+    if (a.kind === "article") {
+      $("#pbody").innerHTML = a.paragraphs.map((p) => `<p class="para${p.highlight ? " hl" : ""}">${esc(p.text)}</p>`).join("");
+      const hl = $("#pbody .hl"); if (hl) hl.scrollIntoView({ block: "center" });
+    } else {
+      $("#pbody").innerHTML = `<div class="md">${markdown(a.markdown)}</div>`;
+    }
+  } catch (err) {
+    $("#pbody").innerHTML = `<p>원문을 불러오지 못했어요. 아래 법제처 링크에서 확인해 주세요.</p>`;
+  }
+}
+function closePanel() {
+  $("#panel").classList.remove("on"); $("#scrim").classList.remove("on"); $("#panel").setAttribute("aria-hidden", "true");
+  if (lastFocus) lastFocus.focus();
+}
+$("#pclose").onclick = closePanel; $("#scrim").onclick = closePanel;
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("#panel").classList.contains("on")) closePanel(); });
+
+// Document Parse는 병합 셀을 칸마다 같은 글자로 반복해 줍니다 → 같은 글자가 이어지면 다시 병합해 보여 줍니다.
+// 숫자 칸(요금 등)은 값이 같아도 서로 다른 칸이므로 병합하지 않습니다.
+function table(grid) {
+  const R = grid.length, C = Math.max(...grid.map((r) => r.length));
+  const val = (r, c) => (grid[r] && grid[r][c] !== undefined ? grid[r][c] : "");
+  const text = (s) => s !== "" && !/^[\d,.\s~～\-]+$/.test(s);
+  const span = grid.map(() => Array(C).fill(null));          // {cs, rs} 또는 'skip'
+  for (let r = 0; r < R; r++) for (let c = 0; c < C; c++) {
+    if (span[r][c] === "skip") continue;
+    let cs = 1; while (c + cs < C && text(val(r, c)) && val(r, c + cs) === val(r, c)) cs++;
+    let rs = 1;
+    while (r + rs < R && text(val(r, c)) && [...Array(cs).keys()].every((k) => val(r + rs, c + k) === val(r, c))
+           && (c + cs >= C || val(r + rs, c + cs) !== val(r, c))) rs++;
+    span[r][c] = { cs, rs };
+    for (let i = 0; i < rs; i++) for (let k = 0; k < cs; k++) if (i || k) span[r + i][c + k] = "skip";
+  }
+  const headRows = Math.max(1, grid.findIndex((row) => row.some((s) => s && !text(s))));   // 숫자가 처음 나오는 행 전까지가 머리글
+  let html = "<table>";
+  for (let r = 0; r < R; r++) {
+    html += r === 0 ? "<thead><tr>" : r === headRows ? "</thead><tbody><tr>" : "<tr>";
+    for (let c = 0; c < C; c++) {
+      const s = span[r][c]; if (s === "skip") continue;
+      const tag = r < headRows || c === 0 ? "th" : "td";
+      html += `<${tag}${text(val(r, c)) ? "" : ' class="num"'}${s.cs > 1 ? ` colspan="${s.cs}"` : ""}${s.rs > 1 ? ` rowspan="${s.rs}"` : ""}>${esc(val(r, c))}</${tag}>`;
+    }
+    html += "</tr>";
+  }
+  return html + (headRows >= R ? "</thead>" : "</tbody>") + "</table>";
+}
+
+// 별표(Document Parse 결과) Markdown → HTML: 표, 제목, 목록, 문단만 간단히
+function markdown(md) {
+  const lines = md.split("\n"); const out = []; let i = 0;
+  while (i < lines.length) {
+    const l = lines[i].trim();
+    if (l.startsWith("|")) {
+      const rows = [];
+      while (i < lines.length && lines[i].trim().startsWith("|")) { rows.push(lines[i].trim()); i++; }
+      const cells = (r) => r.replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
+      const body = rows.filter((r) => !/^[\s|:-]+$/.test(r));   // | --- | --- | 구분선 제거
+      out.push(table(body.map(cells)));
+      continue;
+    }
+    if (/^#+\s/.test(l)) out.push(`<h4>${esc(l.replace(/^#+\s*/, ""))}</h4>`);
+    else if (/^[-*]\s/.test(l)) out.push(`<li>${esc(l.replace(/^[-*]\s*/, ""))}</li>`);
+    else if (l) out.push(`<p>${esc(l)}</p>`);
+    i++;
+  }
+  return out.join("");
+}
+</script>
+</body>
+</html>
