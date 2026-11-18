@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>제출용 API 테스트</title>
+<meta name="description" content="채점에 쓰이는 POST /ask 응답을 JSON 그대로 보고 형식·인용 점수를 점검합니다.">
+<style>
+  :root {
+    --bg: #f4f5f7; --surface: #ffffff; --surface-2: #eef0f3; --text: #16191f; --muted: #5d6573; --line: #dadee5;
+    --accent: #3b3f99; --accent-ink: #ffffff; --accent-soft: #e8e9f7;
+    --ok: #12795a; --ok-bg: #e3f4ec; --bad: #b42318; --bad-bg: #fde8e6; --warn: #8a5a00; --warn-bg: #fff4dc;
+    --code-bg: #f6f7f9; --radius: 12px;
+    --mono: "D2Coding", "Cascadia Code", Consolas, "Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans KR", monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #101216; --surface: #181b21; --surface-2: #20242c; --text: #e6e9ef; --muted: #9aa3b1; --line: #2c313b;
+      --accent: #8f95f0; --accent-ink: #0f1120; --accent-soft: #23264a;
+      --ok: #4cc79a; --ok-bg: #12291f; --bad: #ff7b6e; --bad-bg: #331a17; --warn: #f0c16a; --warn-bg: #2d2412; --code-bg: #14171c;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body { background: var(--bg); color: var(--text); font: 15px/1.6 "Pretendard", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
+    word-break: keep-all; overflow-wrap: anywhere; }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 0 16px; }
+  header { background: var(--surface); border-bottom: 1px solid var(--line); }
+  header .wrap { display: flex; align-items: center; gap: 12px; min-height: 60px; flex-wrap: wrap; padding-top: 8px; padding-bottom: 8px; }
+  .tag { font: 700 12px/1 var(--mono); background: var(--accent); color: var(--accent-ink); border-radius: 6px; padding: 6px 8px; }
+  h1 { font-size: 18px; margin: 0; }
+  header p { margin: 0; color: var(--muted); font-size: 13px; flex-basis: 100%; }
+  header a { color: var(--accent); margin-left: auto; font-size: 13px; }
+  main { padding: 20px 0 48px; display: grid; gap: 16px; }
+  .panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  label.f { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+  input[type=text], select, textarea { font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--line);
+    border-radius: 8px; padding: 8px 10px; }
+  input[type=text] { min-width: 260px; font-family: var(--mono); font-size: 13px; }
+  textarea { width: 100%; min-height: 120px; resize: vertical; line-height: 1.5; }
+  input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-visible { outline: 3px solid var(--accent); outline-offset: 1px; }
+  button { font: inherit; cursor: pointer; border-radius: 8px; padding: 8px 14px; min-height: 40px; border: 1px solid var(--line);
+    background: var(--surface); color: var(--text); }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 700; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .hint { font-size: 12.5px; color: var(--muted); margin: 8px 0 0; }
+
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+  .stat { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+  .stat b { display: block; font-size: 20px; font-variant-numeric: tabular-nums; }
+  .stat span { font-size: 12.5px; color: var(--muted); }
+  .stat.good b { color: var(--ok); } .stat.bad b { color: var(--bad); }
+
+  .results { display: grid; gap: 10px; }
+  .item { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+  .item.fail { border-color: var(--bad); }
+  .item-head { display: flex; gap: 10px; align-items: baseline; padding: 12px 14px; flex-wrap: wrap; }
+  .qid { font: 700 12px var(--mono); color: var(--muted); }
+  .qtext { font-weight: 700; flex: 1; min-width: 200px; }
+  .meta { font: 12.5px var(--mono); color: var(--muted); white-space: nowrap; }
+  .score { font: 700 12.5px var(--mono); border-radius: 6px; padding: 2px 8px; }
+  .score.s1 { background: var(--ok-bg); color: var(--ok); } .score.s5 { background: var(--warn-bg); color: var(--warn); } .score.s0 { background: var(--bad-bg); color: var(--bad); }
+  .checks { display: flex; gap: 6px; flex-wrap: wrap; padding: 0 14px 10px; }
+  .chk { font-size: 12px; border-radius: 999px; padding: 2px 9px; border: 1px solid transparent; }
+  .chk.ok { background: var(--ok-bg); color: var(--ok); } .chk.bad { background: var(--bad-bg); color: var(--bad); border-color: var(--bad); }
+  .body { padding: 0 14px 12px; display: grid; gap: 8px; }
+  .kv { display: grid; grid-template-columns: 110px 1fr; gap: 4px 10px; font-size: 14px; }
+  .kv dt { font: 12.5px var(--mono); color: var(--muted); padding-top: 2px; }
+  .kv dd { margin: 0; }
+  .kv ul { margin: 0; padding-left: 18px; }
+  .gold { font-size: 12.5px; color: var(--muted); }
+  details summary { cursor: pointer; font-size: 13px; color: var(--accent); }
+  pre { background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin: 6px 0 0;
+    font: 12.5px/1.55 var(--mono); white-space: pre-wrap; overflow-x: auto; }
+  .pending .qtext::after { content: " · 응답 기다리는 중"; font-weight: 400; color: var(--muted); }
+  .empty { color: var(--muted); text-align: center; padding: 28px 0; }
+  @media (max-width: 560px) { .kv { grid-template-columns: 1fr; } .kv dt { padding-top: 6px; } input[type=text] { min-width: 0; width: 100%; } label.f { flex: 1 1 100%; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <span class="tag">POST /ask</span>
+    <h1>제출용 API 테스트</h1>
+    <a href="/">시연 화면으로 →</a>
+    <p>채점과 같은 방식으로 제출용 엔드포인트를 호출하고, 운영진이 받는 JSON을 그대로 보여 줍니다. 시연 화면(/api/ask)과 달리 요금 환산을 하지 않습니다.</p>
+  </div>
+</header>
+
+<main class="wrap">
+  <section class="panel" aria-label="테스트 설정">
+    <div class="row">
+      <label class="f">엔드포인트
+        <input type="text" id="url" value="/ask" spellcheck="false" aria-describedby="urlhint">
+      </label>
+      <label class="f">동시 요청 수
+        <select id="conc"><option value="1">1개씩</option><option value="3" selected>3개씩</option><option value="6">6개씩</option><option value="11">한꺼번에</option></select>
+      </label>
+      <div class="row" style="margin-left:auto">
+        <button type="button" id="loadSample">연습 문항 11개 불러오기</button>
+        <button type="button" id="clearQ">비우기</button>
+      </div>
+    </div>
+    <label class="f" style="margin-top:12px">질문 (한 줄에 하나)
+      <textarea id="qs" placeholder="예) 서울시 공영주차장 1급지 노상주차장 요금은 5분에 얼마인가요?"></textarea>
+    </label>
+    <div class="row" style="margin-top:10px">
+      <button type="button" class="primary" id="run">실행</button>
+      <button type="button" id="stop" disabled>멈추기</button>
+      <button type="button" id="save" disabled>결과 JSON 저장</button>
+    </div>
+    <p class="hint" id="urlhint">배포한 서버를 시험하려면 엔드포인트에 전체 주소(https://…/ask)를 넣으세요. 다른 도메인이면 그 서버가 CORS를 허용해야 브라우저에서 호출됩니다.
+      연습 문항을 불러오면 정답 조항으로 인용 점수(항 일치 1.0 · 조 일치 0.5)를 매깁니다.</p>
+  </section>
+
+  <section class="stats" id="stats" aria-live="polite"></section>
+  <section class="results" id="results"><div class="empty">질문을 넣고 실행하면 결과가 여기에 쌓입니다.</div></section>
+</main>
+
+<script>
+// 강사 연습 문항 (starter-kit/sample_questions.json과 같음)
+const SAMPLE = [
+  ["S1", "서울시 공영주차장 1급지 노상주차장 요금은 5분에 얼마인가요?", [["서울특별시 주차장 설치 및 관리 조례 별표 1", "서울특별시 주차장 설치 및 관리 조례 제6조 제1항"]]],
+  ["S2", "서울시 금연구역에서 담배를 피우면 과태료가 얼마인가요?", [["서울특별시 금연환경 조성 및 간접흡연 피해방지조례 제10조 제1항"]]],
+  ["S3", "서울시 청년 기본 조례에서 말하는 청년은 몇 살부터 몇 살까지인가요?", [["서울특별시 청년 기본 조례 제3조"]]],
+  ["C1", "저는 65세인데 서울대공원 동물원 입장료를 면제받을 수 있나요?", [["서울특별시 도시공원 조례 제20조 제1항"]]],
+  ["C2", "경차를 서울시 공영주차장에 세우면 주차요금이 할인되나요?", [["서울특별시 주차장 설치 및 관리 조례 제7조 제1항"]]],
+  ["C3", "유기견을 입양해서 동물등록을 하려는데 등록수수료를 내야 하나요?", [["서울특별시 동물보호 조례 제28조"]]],
+  ["M1", "장애인 할인과 다둥이 행복카드 할인을 공영주차장에서 둘 다 받을 수 있나요?", [["서울특별시 주차장 설치 및 관리 조례 제7조 제3항"], ["서울특별시 주차장 설치 및 관리 조례 제7조 제1항"]]],
+  ["M2", "어린이공원에서 술을 마시면 어떻게 되나요?", [["서울특별시 도시공원 조례 제22조의3"], ["서울특별시 도시공원 조례 제23조 제4항"]]],
+  ["M3", "서울시 자전거주차장은 돈을 내야 하나요? 낸다면 얼마인가요?", [["서울특별시 자전거이용 활성화에 관한 조례 제9조 제1항"], ["서울특별시 자전거이용 활성화에 관한 조례 별표"]]],
+  ["T1", "서울시에서 자전거 탈 때 헬멧을 안 쓰면 과태료가 얼마인가요?", []],
+  ["T2", "강남구 부설주차장 관리 규칙에 따르면 부설주차장 개방 요금은 얼마인가요?", []],
+];
+const GOLD = new Map(SAMPLE.map(([id, q, g]) => [q, { id, gold: g }]));
+const LIMIT_MS = 90000;
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+// ---- check.py와 같은 인용 비교 ----
+const CITE = /(서울특별시.*?(?:조례|규칙))\s*(제\d+조(?:의\d+)?|별표\s*\d*|별도\s*\d+)\s*(제\d+항)?/;
+function parse(c) {
+  const m = String(c).replace(/ /g, " ").match(CITE);
+  return m ? [m[1].replace(/\s+/g, ""), m[2].replace(/\s+/g, ""), m[3] || null] : null;
+}
+function match(pred, gold) {
+  const p = parse(pred), g = parse(gold);
+  if (!p || !g || p[0] !== g[0] || p[1] !== g[1]) return 0;
+  return g[2] === null || p[2] === g[2] ? 1 : 0.5;
+}
+function scoreCitation(preds, gold) {
+  if (!gold) return null;
+  if (gold.length === 0) return null;                       // 함정은 따로 판정
+  return gold.reduce((t, alts) => t + Math.max(0, ...preds.flatMap((p) => alts.map((a) => match(p, a)))), 0) / gold.length;
+}
+
+// ---- 형식 점검 (채점 0점 조건 기준) ----
+const DISTRICT = /서울특별시\s*\S+구\s/;
+function checkFormat(r, ms, httpOk) {
+  const c = [];
+  const push = (ok, label) => c.push({ ok, label });
+  push(httpOk, "HTTP 200·JSON");
+  if (!r) return c;
+  const keys = ["answer", "citation", "source_url", "effective_date"];
+  const typesOk = typeof r.answer === "string" && Array.isArray(r.citation) && r.citation.every((x) => typeof x === "string")
+    && typeof r.source_url === "string" && typeof r.effective_date === "string";
+  push(keys.every((k) => k in r) && typesOk, "필드 4개·형식");
+  push(ms <= LIMIT_MS, "90초 이내");
+  const unknown = r.answer.startsWith("확인 불가");
+  if (unknown) {
+    push(r.citation.length === 0, "확인 불가 → citation []");
+  } else {
+    push(r.citation.length > 0, "인용 있음");
+    push(/^https:\/\/www\.law\.go\.kr\//.test(r.source_url), "source_url");
+    push(/^\d{4}-\d{2}-\d{2}$/.test(r.effective_date), "effective_date");
+    push(r.citation.every((x) => parse(x)), "인용 표기");
+  }
+  push(!r.citation.some((x) => DISTRICT.test(x)), "자치구 인용 없음");
+  return c;
+}
+
+// ---- 실행 ----
+let rows = [], stopFlag = false, running = false;
+
+$("#loadSample").onclick = () => { $("#qs").value = SAMPLE.map((s) => s[1]).join("\n"); };
+$("#clearQ").onclick = () => { $("#qs").value = ""; $("#qs").focus(); };
+$("#stop").onclick = () => { stopFlag = true; $("#stop").disabled = true; };
+$("#save").onclick = () => {
+  const blob = new Blob([JSON.stringify(rows.map(({ el, ...r }) => r), null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `submit_test_${new Date().toISOString().slice(0, 16).replace(/[:T]/g, "")}.json`;
+  a.click(); URL.revokeObjectURL(a.href);
+};
+
+$("#run").onclick = async () => {
+  if (running) return;
+  const qs = $("#qs").value.split("\n").map((s) => s.trim()).filter(Boolean);
+  if (!qs.length) { $("#qs").focus(); return; }
+  running = true; stopFlag = false;
+  $("#run").disabled = true; $("#stop").disabled = false; $("#save").disabled = true;
+  const box = $("#results"); box.innerHTML = "";
+  rows = qs.map((q, i) => {
+    const el = document.createElement("article");
+    el.className = "item pending";
+    const g = GOLD.get(q);
+    el.innerHTML = head(i, q, g, null, null);
+    box.appendChild(el);
+    return { i, question: q, id: g ? g.id : null, gold: g ? g.gold : null, el };
+  });
+  renderStats();
+  const url = $("#url").value.trim() || "/ask";
+  const conc = Math.max(1, parseInt($("#conc").value, 10));
+  let next = 0;
+  async function worker() {
+    while (next < rows.length && !stopFlag) {
+      const row = rows[next++];
+      await runOne(url, row);
+      renderStats();
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(conc, rows.length) }, worker));
+  rows.filter((r) => r.ms === undefined).forEach((r) => { r.el.classList.remove("pending"); r.el.querySelector(".qtext").insertAdjacentHTML("afterend", `<span class="meta">멈춤</span>`); });
+  running = false;
+  $("#run").disabled = false; $("#stop").disabled = true; $("#save").disabled = !rows.some((r) => r.ms !== undefined);
+  renderStats();
+};
+
+async function runOne(url, row) {
+  const t0 = performance.now();
+  let res = null, http = 0, raw = "", err = "";
+  try {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), LIMIT_MS + 5000);
+    const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question: row.question }), signal: ctl.signal });
+    clearTimeout(timer);
+    http = r.status; raw = await r.text();
+    try { res = JSON.parse(raw); } catch { err = "JSON이 아님"; }
+  } catch (e) { err = e.name === "AbortError" ? "시간 초과" : String(e.message || e); }
+  row.ms = Math.round(performance.now() - t0);
+  row.http = http; row.response = res; row.raw = raw; row.error = err;
+  row.checks = checkFormat(res, row.ms, http === 200 && !!res);
+  row.formatOk = row.checks.every((c) => c.ok);
+  if (res && row.gold) {
+    row.score = row.gold.length ? scoreCitation(res.citation || [], row.gold)
+      : (String(res.answer).startsWith("확인 불가") && (res.citation || []).length === 0 ? 1 : 0);
+  }
+  renderRow(row);
+}
+
+function head(i, q, g, ms, score) {
+  const sc = score === null || score === undefined ? "" :
+    `<span class="score ${score === 1 ? "s1" : score > 0 ? "s5" : "s0"}">${g && g.gold.length === 0 ? (score === 1 ? "함정 정답" : "함정 오답") : "인용 " + score.toFixed(2)}</span>`;
+  return `<div class="item-head"><span class="qid">${g ? esc(g.id) : "#" + (i + 1)}</span><span class="qtext">${esc(q)}</span>
+    ${ms !== null && ms !== undefined ? `<span class="meta">${(ms / 1000).toFixed(1)}초</span>` : ""}${sc}</div>`;
+}
+
+function renderRow(row) {
+  const r = row.response;
+  row.el.className = "item" + (row.formatOk && (row.score === undefined || row.score === 1) ? "" : " fail");
+  const checks = row.checks.map((c) => `<span class="chk ${c.ok ? "ok" : "bad"}">${c.ok ? "✓" : "✕"} ${esc(c.label)}</span>`).join("");
+  const goldTxt = row.gold ? (row.gold.length ? row.gold.map((alts) => alts.join(" 또는 ")).join(" + ") : "확인 불가 (함정)") : "";
+  const body = r ? `<dl class="kv">
+      <dt>answer</dt><dd>${esc(r.answer)}</dd>
+      <dt>citation</dt><dd>${(r.citation || []).length ? `<ul>${r.citation.map((c) => `<li>${esc(c)}</li>`).join("")}</ul>` : "[]"}</dd>
+      <dt>source_url</dt><dd>${r.source_url ? `<a href="${esc(r.source_url)}" target="_blank" rel="noopener">${esc(r.source_url)}</a>` : '""'}</dd>
+      <dt>effective_date</dt><dd>${esc(r.effective_date || '""')}</dd>
+    </dl>` : `<p style="margin:0;color:var(--bad)">응답을 받지 못했습니다: ${esc(row.error || "HTTP " + row.http)}</p>`;
+  row.el.innerHTML = head(row.i, row.question, row.gold ? { id: row.id, gold: row.gold } : null, row.ms, row.score)
+    + `<div class="checks">${checks}</div><div class="body">${body}
+      ${goldTxt ? `<div class="gold">정답 조항: ${esc(goldTxt)}</div>` : ""}
+      <details><summary>운영진이 받는 JSON 원문 (HTTP ${row.http || "-"})</summary><pre>${esc(r ? JSON.stringify(r, null, 2) : row.raw || row.error)}</pre></details></div>`;
+}
+
+function renderStats() {
+  const done = rows.filter((r) => r.ms !== undefined);
+  const graded = done.filter((r) => r.gold && r.gold.length), traps = done.filter((r) => r.gold && !r.gold.length);
+  const avg = (a) => a.reduce((s, x) => s + x, 0) / (a.length || 1);
+  const maxMs = Math.max(0, ...done.map((r) => r.ms));
+  const fmt = done.filter((r) => r.formatOk).length, errs = done.filter((r) => !r.response || r.http !== 200).length;
+  const card = (v, l, cls = "") => `<div class="stat ${cls}"><b>${v}</b><span>${l}</span></div>`;
+  $("#stats").innerHTML = rows.length ? [
+    card(`${done.length} / ${rows.length}`, "완료"),
+    card(`${fmt} / ${done.length || 0}`, "형식 통과", done.length ? (fmt === done.length ? "good" : "bad") : ""),
+    card(errs, "오류 응답 (0점)", errs ? "bad" : (done.length ? "good" : "")),
+    card(`${(avg(done.map((r) => r.ms)) / 1000).toFixed(1)}초`, "평균 응답 시간"),
+    card(`${(maxMs / 1000).toFixed(1)}초`, "최대 (제한 90초)", maxMs > LIMIT_MS ? "bad" : ""),
+    graded.length ? card(avg(graded.map((r) => r.score)).toFixed(3), `인용 점수 (${graded.length}문항)`, avg(graded.map((r) => r.score)) === 1 ? "good" : "") : "",
+    traps.length ? card(`${traps.filter((r) => r.score === 1).length} / ${traps.length}`, "함정 정답", traps.every((r) => r.score === 1) ? "good" : "bad") : "",
+  ].join("") : "";
+}
+</script>
+</body>
+</html>

@@ -28,6 +28,12 @@ def home():
     return FileResponse(INDEX_HTML, media_type="text/html; charset=utf-8")
 
 
+@app.get("/test", include_in_schema=False)
+def submit_test():
+    """제출용 POST /ask 테스트 페이지 (운영진이 받는 JSON 그대로 + 형식·인용 점수 점검). 시연 화면과 별개."""
+    return FileResponse(config.ROOT / "static" / "submit_test.html", media_type="text/html; charset=utf-8")
+
+
 @app.get("/api/article")
 def article(label: str):
     """화면에서 인용 조항을 눌렀을 때 보여 줄 원문 (조 전체 + 인용된 항 표시, 또는 별표 표)."""
@@ -58,9 +64,10 @@ async def ask(req: Ask):
 
 @app.post("/api/ask", include_in_schema=False)
 async def ask_web(req: Ask):
-    """웹 화면용. 제출용 /ask와 같지만, "10분 요금"처럼 요금표 단위의 배수를 물으면 환산한 금액으로 답합니다."""
+    """웹 화면용. 지금은 제출용 /ask와 똑같이 답합니다 (시연용 웹은 따로 구현 예정).
+    시간 환산 답(예: "10분 1,000원")이 필요하면 rag.answer(req.question, None, True)로 부르면 됩니다."""
     try:
-        return await asyncio.wait_for(asyncio.to_thread(rag.answer, req.question, None, True),
+        return await asyncio.wait_for(asyncio.to_thread(rag.answer, req.question),
                                       timeout=config.ANSWER_TIMEOUT_SEC)
     except Exception as e:  # noqa: BLE001
         log.warning("ask_web failed: %r", e)
