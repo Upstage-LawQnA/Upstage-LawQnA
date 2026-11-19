@@ -9,6 +9,7 @@
 import json
 import math
 import re
+import threading
 import time
 from collections import Counter
 
@@ -39,6 +40,7 @@ RELATED_SEM_GAP = 0.02                # 의미 점수 1위가 2위보다 이만�
 STRICT_RETRY = "strict" not in LEAN   # 1차가 '근거 없음'이면 2차 답을 엄격하게 검증 (RAG_LEAN=strict 이면 끔)
 CLAIM_CHECK = _os.environ.get("RAG_CLAIMS", "1") == "1"   # 주장 단위 검증 (기본 켬, RAG_CLAIMS=0 이면 끔) (대상→조항·호·분류를 조문과 대조)
 CLAIM_ROUNDS = 1                      # 주장이 조문과 어긋날 때 사실을 알려 주고 다시 쓰게 하는 최대 횟수
+FIRST_TRIES = int(_os.environ.get("RAG_FIRST_TRIES", "3"))   # 1차 답을 동시에 몇 번 돌려 먼저 통과한 것을 쓸지 (1이면 예전처럼 한 번)
 TRIM_UNNEEDED = "trim" not in LEAN     # 검증기가 고른 '필요 없는 문장' 빼기 (RAG_LEAN=trim 이면 끔)
 
 UNKNOWN = {"answer": "확인 불가", "citation": [], "source_url": "", "effective_date": ""}
@@ -46,7 +48,8 @@ DISTRICT = re.compile(r"서울특별시\s*\S+구\s")      # 'OO구' 자치구 �
 # 질문이 특정 자치구의 요금·조례·규칙을 물으면 6개 서울특별시 조례 범위 밖입니다 (대회 범위). 25개 자치구 이름은 공개 행정구역 목록.
 GU_NAMES = re.compile(r"(?<![가-힣])(?:종로구|중구|용산구|성동구|광진구|동대문구|중랑구|성북구|강북구|도봉구|노원구|은평구|서대문구|마포구|양천구|"
                       r"강서구|구로구|금천구|영등포구|동작구|관악구|서초구|강남구|송파구|강동구)(?=[\s,?.]|의|에|은|는|도|$)")
-GU_RULE_Q = re.compile(r"요금|조례|규칙|과태료|얼마|정기권|입장료|사용료|이용료|수수료")
+# 할인·감면·면제도 그 자치구 시설 요금에 대한 질문입니다 ("강남구 공영주차장에서 장애인·다둥이 할인 같이?"가 서울시 조례로 답했었음)
+GU_RULE_Q = re.compile(r"요금|조례|규칙|과태료|얼마|정기권|입장료|사용료|이용료|수수료|할인|감면|면제")
 AMOUNT_Q = re.compile(r"얼마(?!\s*동안|나)|얼마나\s*(?:내|드|들|받|할인|감면|깎|비싸|싸|나와|나오|줘|주|돼|되)")            # 금액·비율을 묻는 질문 ('얼마 동안/얼마나 자주'는 제외)
 AMOUNT_A = re.compile(r"\d[\d,]*(?:\.\d+)?\s*(?:만\s*원|천\s*원|원)|\d+분의\s*\d+|\d+(?:\.\d+)?\s*(?:%|퍼센트)|\d+\s*할(?!인)|무료|전액")
 NO_AMOUNT = re.compile(r"(금액|요금|비용|액수)[^.]{0,25}(정해져\s*있지\s*않|규정되어\s*있지\s*않|나와\s*있지\s*않|명시되어\s*있지\s*않|정하고\s*있지\s*않|알\s*수\s*없)"
@@ -83,6 +86,8 @@ PAY_BUT = re.compile(r"^네\s*,\s*(?:원칙적으로\s*|기본적으로\s*|일�
 # '않은'(꾸밈말: "기간이 따로 정해져 있지 않은 경우")은 결론이 아니라서 뺍니다 (F12 오탐 방지)
 NO_RULE = re.compile(r"(규정|조항|내용)(은|이|도)?\s*((이\s*)?(근거|조례)들?(에는|에)\s*)?(따로\s*)?(없|존재하지 않)"
                      r"|명시(되어|돼)?\s*있지 않(?!은)|정하고 있지 않(?!은)|규정하고 있지 않(?!은)"
+                     # 킥보드 "두 명이 함께 타는 것을 허용하거나 금지하는 내용은 정하지 않습니다"
+                     r"|(내용|규정|사항)(은|을|도)?\s*(따로\s*)?정하지\s*않(?!은|으면)"
                      r"|(정해져|나와|적혀|규정되어|기재되어)\s*있지\s*않(?!은)|정해지지\s*않(?!은)|따로\s*정하는\s*바에\s*따르"
                      r"|(근거|조례)들?(에는|에|만으로는)\s*(따로\s*)?없|(근거|조례)들?만으로는|(답할|확인할|판단할|말할)\s*수\s*없"
                      # Z2 "음주 자전거를 벌금으로 직접 부과하지 않습니다. 대신 (금주구역 과태료 10만원)…"
@@ -355,6 +360,7 @@ SYSTEM = """너는 서울특별시 조례 질의응답 도우미다.
 주장 적기 (claims, 있을 때만):
 - 답에서 대상별로 내린 판단을 하나씩 적는다. subject는 질문 속 대상·행위 이름 그대로(예: 국가유공자, 30명 이상 단체, 맹견 출입),
   label은 그 판단의 근거 라벨, ho는 그 대상이 적힌 목록의 호 번호(목록이 아니면 빈 문자열), kind는 판단 종류.
+  목록에 없어 대상이 아니라고 답한 대상은 kind를 "대상 아님"으로 적는다.
 - found=false면 빈 배열.
 
 found=false (확인 불가) 로 할 때:
@@ -405,7 +411,7 @@ def _schema(hits):
                     **({"claims": {"type": "array", "items": {
                         "type": "object",
                         "properties": {"subject": {"type": "string"}, "label": item, "ho": {"type": "string"},
-                                       "kind": {"type": "string", "enum": ["면제", "감면", "허용", "금지", "의무", "금액", "절차", "기타"]}},
+                                       "kind": {"type": "string", "enum": ["면제", "감면", "대상 아님", "허용", "금지", "의무", "금액", "절차", "기타"]}},
                         "required": ["subject", "label", "ho", "kind"], "additionalProperties": False}}}
                        if CLAIM_CHECK else {}),
                 },
@@ -467,9 +473,30 @@ def _context(hits, question=""):
     def body(t):          # 개정 이력 꼬리표는 답에 쓸 일이 없어 빼고 넣을 수 있게 합니다 (CLEAN_AMEND)
         t = AMEND_TAG.sub("", t) if config.CLEAN_AMEND else t
         return t
+    # 면제·감면 목록인데 질문한 대상(다른 목록에는 실제로 있는 이름)이 이 목록 호에는 없으면 그렇다고 적어 줍니다.
+    # ("다둥이 행복카드 → 운동시설 이용료 감면?"에 운동시설 감면 목록에 다둥이를 넣어 답하던 일)
+    missing, all_in = {}, set()
+    if question and CLAIM_CHECK:
+        try:
+            subs = _question_subjects(question, hits)
+            lst = _list_lists(hits)
+            for lb, core, _, _ in lst:
+                # 같은 요금의 다른 목록(입장료 감면 ↔ 입장료 면제)에 있는 대상은 그 요금 혜택이 있으므로 '없음' 표시를 하지 않음
+                same_fee = {l2 for l2, c2, _, _ in lst if c2 == core}
+                gone = [w for w in subs if not any(l[0] in same_fee for l in _locate(w, hits))]
+                if gone:
+                    missing[lb] = gone
+                elif len(subs) >= 2:
+                    all_in.add(lb)            # 질문한 대상이 모두 같은 목록에 있음 (같은 요금에 대한 혜택)
+        except Exception:  # noqa: BLE001  표시는 보조 정보라 실패해도 근거는 그대로
+            missing, all_in = {}, set()
     def rel(h):
         r = h.get("related") if RELATED_ITEMS else None
-        return f"\n(질문과 관련된 호: {', '.join(n + '호' for n in r)})" if r else ""
+        note = f"\n(질문과 관련된 호: {', '.join(n + '호' for n in r)})" if r else ""
+        if h["label"] in missing:
+            note += f"\n(질문한 대상 {', '.join(repr(w) for w in missing[h['label']])}은(는) 이 목록의 호에 없음)"
+        # ('모두 이 목록에 있음' 표시는 "겹쳐 적용은 정해져 있지 않다" 꼬리를 늘려 장애인+다둥이가 7/10으로 떨어져 넣지 않음)
+        return note
     if config.EVIDENCE_KEY == "index":
         return "\n\n".join(f"[근거 {i}] {h['label']}\n{body(h['text'])}{rel(h)}" for i, h in enumerate(hits, 1))
     return "\n\n".join(f"[근거: {h['label']}]\n{body(h['text'])}{rel(h)}" for h in hits)
@@ -931,6 +958,35 @@ def _remove_sentences(ans, pat, clauses=True):
 DELEGATE_SENT = re.compile(r"따로\s*정(합니다|해집니다|하며|하고)")
 
 
+BOTH_OK = re.compile(r"(함께|같이|모두|둘\s*다|각각|동시에|중복(?:해서|하여)?)[^.]{0,30}?"
+                     r"(받을|적용받을|해당할|적용될|이용할)\s*수\s*(?:는\s*)?있")
+
+
+def _drop_contradicting_yes(ans):
+    """'아니요'(결론: 하나만 적용)인데 앞부분이 "둘 다 받을 수 있다"고 말하면 그 앞부분을 뺍니다.
+    "아니요, A와 B를 함께 받을 수 있습니다. 다만 … 하나만 적용됩니다" → "아니요, … 하나만 적용됩니다"
+    "아니요, 두 할인 모두 받을 수 있지만, 같은 요금에서는 … 하나만 적용됩니다" → "아니요, 같은 요금에서는 …"
+    낱말·조항을 지정하지 않고, 첫 문장의 긍정 단정과 뒤따르는 결론의 모양만 봅니다."""
+    m = re.match(r"아니요,\s*", ans)
+    if not m:
+        return ans
+    body = ans[m.end():]
+    s1, *rest = re.split(r"(?<=[.!?])\s+", body, maxsplit=1)
+    rest = rest[0] if rest else ""
+    sc = re.match(r"(\S+\s*의\s*경우)\s*,?\s*", s1)        # "주차요금의 경우"처럼 범위를 밝힌 말은 남깁니다
+    scope = sc.group(1) + ", " if sc else ""
+    # 한 문장 안: "…받을 수 있지만, <결론>"
+    parts = re.split(r"(?<=있지만)\s*,?\s*|(?<=있으나)\s*,?\s*", s1, maxsplit=1)
+    if len(parts) == 2 and BOTH_OK.search(parts[0]) and parts[1].strip():
+        return "아니요, " + scope + parts[1].strip() + (" " + rest if rest else "")
+    # 따로 선 문장: "…받을 수 있습니다." + "다만 <결론>"
+    # "받을 수 있습니다."처럼 대상 없이 긍정만 한 짧은 첫 문장도 같습니다
+    bare_ok = re.fullmatch(r"\s*(?:둘\s*다\s*)?(?:받을|적용받을|해당할)\s*수\s*(?:는\s*)?있습니다\.?\s*", s1)
+    if (BOTH_OK.search(s1) or bare_ok) and not re.search(r"없|않|못|하나만", s1) and rest:
+        return "아니요, " + scope + re.sub(r"^(?:다만|그러나|하지만)\s*,?\s*", "", rest)
+    return ans
+
+
 def _drop_ungrounded_delegation(ans, used):
     """"감면율과 운영 방식은 시장이 따로 정합니다" 문장은 인용 조항에 '따로 정'이 있을 때만 남깁니다.
     "장애인 혜택?" 답에 공공자전거 조항(제12조의3 제3항)의 문구가 섞여, 조례가 80%로 정한 주차 할인까지
@@ -1167,15 +1223,26 @@ def _locate(word, hits):
         flat = re.sub(r"\s+", "", text)
         if word not in flat:
             continue
-        hos = [ln.strip() for ln in text.splitlines() if HO_LINE.match(ln)]
-        nums = [ln.split(".", 1)[0] for ln in hos if word in re.sub(r"\s+", "", ln)]
+        # 호 하나에 '가. 나. 다.' 목이 줄을 바꿔 딸려 있으면(주차장 조례 제7조 제1항 제1호) 그 줄들도 그 호의 글입니다
+        blocks, cur = {}, None
+        for ln in text.splitlines():
+            if HO_LINE.match(ln):
+                cur = ln.strip().split(".", 1)[0]
+            if cur is not None:
+                blocks[cur] = blocks.get(cur, "") + re.sub(r"\s+", "", ln)
+        nums = [n for n, body in blocks.items() if word in body]
         for n in dict.fromkeys(nums or [""]):
             if (h["label"], n) not in {(a, b) for a, b, _ in locs}:
                 locs.append((h["label"], n, _head_kind(text)))
     return locs
 
 
-def _check_claims(claims, hits):
+SUBJ_NOT_LISTED = re.compile(r"(목록|대상|항목)에[^.]{0,30}?(없|포함되지\s*않|포함되어\s*있지\s*않|들어\s*있지\s*않|적혀\s*있지\s*않|정해져\s*있지\s*않|들어가지\s*않)"
+                             r"|대상이\s*아니|해당하지\s*않|감면받을\s*수\s*없")
+_last_claim_facts = threading.local()   # 주장 검증이 끝내 안 맞았을 때 확인된 사실 (2차 시도에 넘김)
+
+
+def _check_claims(claims, hits, answer=""):
     """모델이 적은 주장(대상→근거·호·분류)을 조문과 대조합니다. 조항·주제를 지정하지 않는 계산입니다.
 
     - 대상 낱말이 근거 조각 어딘가에 있는데, 모델이 고른 조항(또는 호)에는 없으면 잘못 짚은 것
@@ -1193,22 +1260,213 @@ def _check_claims(claims, hits):
         if kind not in ("면제", "감면") or not h0 or not any(HO_LINE.match(ln) for ln in h0["text"].splitlines()):
             continue
         words = [w for w in _hangul_words(subj) if len(w) >= 3 and w not in CLAIM_STOP]
+        # 답이 그 대상을 "목록에 없다/대상이 아니다"라고 말했으면, 모델이 kind를 감면으로 적었어도 부정 판단이라 검사하지 않음
+        # ("다둥이 운동시설 감면되나요?"에 "아니요, 감면 목록에 없습니다"라고 맞게 답하고도 불일치로 떨어지던 일)
+        if words and any(any(w in s for w in words) and SUBJ_NOT_LISTED.search(s)
+                         for s in re.split(r"(?<=[.!?])\s+|,\s*", answer)):
+            continue
+        # 호는 "7호"뿐 아니라 "1호, 7호"·"제1호·제7호"처럼 여럿을 함께 적기도 합니다 → 번호 집합으로 비교
+        # (예전에는 "1호, 7"을 통째로 번호와 비교해, 맞게 짚은 주장도 늘 '잘못 짚음'으로 판정했음)
+        # "7의3"·"제7호의3"은 한 호(7의3)입니다 (7과 3으로 쪼개면 맞게 짚은 임산부 7의3호도 불일치로 판정했음)
+        ho_nums = set(re.findall(r"\d+(?:의\d+)?", re.sub(r"호\s*의", "의", ho)))
         bad = False
         for w in words:
             locs = _locate(w, hits)
             if not locs:
                 continue
             here = [l for l in locs if l[0] == label]
-            if not here or (ho and here[0][1] and all(l[1] != ho.rstrip("호") for l in here)):
+            if not here or (ho_nums and here[0][1] and not any(l[1] in ho_nums for l in here)):
                 bad = True
             elif kind in ("면제", "감면") and here[0][2] and here[0][2] != kind:
                 bad = True
             if bad:
                 where = "; ".join(f"{lb.replace('서울특별시 ', '')}{(' ' + n + '호') if n else ''}"
                                   f"{(' (' + k + ' 목록)') if k else ''}" for lb, n, k in locs[:4])
-                facts.append(f"- '{subj}'은(는) 근거에서 {where}에 적혀 있다.")
+                # 어디에 있는지뿐 아니라 '고른 곳에는 없다'도 알려 줍니다. 위치만 알려 주면 같은 대상을
+                # 그 항(예: 운동시설 감면 목록)에 또 넣는 일이 있었습니다.
+                picked = f"{label.replace('서울특별시 ', '')}{(' ' + ho) if ho else ''}"
+                if not here:
+                    facts.append(f"- '{subj}'은(는) {picked}에는 없다. 근거에서 {where}에 적혀 있다. "
+                                 f"{picked}의 대상으로 쓰지 말 것.")
+                else:
+                    facts.append(f"- '{subj}'은(는) 근거에서 {where}에 적혀 있다.")
                 break
     return (not facts), "\n".join(facts)
+
+
+FEE_HEAD = re.compile(r"(?:([가-힣]{2,})\s)?([가-힣]*(?:료|요금))\s*(?:을|를)\s*(?:면제|감면|할인)")
+SUBJ_SUFFIX = re.compile(r"(이랑|할인|감면|면제|혜택|과|와|을|를|이|가|은|는|도|의|에|랑)$")
+GROUP_REF = re.compile(r"두\s*경우|둘\s*다|모두|각각|두\s*(?:사람|대상|할인|혜택)")
+
+
+RATE_RE = re.compile(r"\d+\s*분의\s*\d+|\d+\s*(?:%|퍼센트)")
+
+
+def _norm_rate(t):
+    """"100분의 80"·"80%"·"80퍼센트"를 같은 꼴(100분의80)로."""
+    t = re.sub(r"\s+", "", t)
+    return re.sub(r"(\d+)(?:%|퍼센트)", r"100분의\1", t)
+
+
+def _ho_block(h, num, head=False):
+    """항 조각에서 그 호(딸린 '가. 나.' 줄 포함)의 글. head=True면 항 머리말(첫 호 앞)도 붙임."""
+    lines, cur, out = h["text"].splitlines(), None, []
+    head_lines = []
+    for ln in lines:
+        if HO_LINE.match(ln):
+            cur = ln.strip().split(".", 1)[0]
+        if cur is None:
+            head_lines.append(ln)
+        elif cur == num:
+            out.append(ln)
+    return ("\n".join(head_lines) + "\n" if head else "") + "\n".join(out)
+
+
+def _list_lists(hits):
+    """근거 중 면제·감면 목록 항: [(label, 요금 이름, 앞 수식어 또는 None, 면제/감면)].
+    요금 이름·종류는 항 머리말("…별표 2의 운동시설 이용료를 감면할 수 있다")에서 읽습니다."""
+    out, seen = [], set()
+    for h in hits:
+        if h["label"] in seen or not any(HO_LINE.match(ln) for ln in h["text"].splitlines()):
+            continue
+        seen.add(h["label"])
+        kind = _head_kind(h["text"])
+        head = re.split(r"\n\s*1\.\s", re.sub(r"\[[^\]]*\]", " ", h["text"]), maxsplit=1)[0]
+        m = FEE_HEAD.search(head)
+        if kind and m:
+            qual = m.group(1) if m.group(1) and not re.search(r"(는|은|에|를|을|의|고|면|서|도|여)$", m.group(1)) else None
+            out.append((h["label"], m.group(2), qual, kind))
+    return out
+
+
+def _question_subjects(question, hits):
+    """질문 속 대상 이름 중 근거 목록(호)에 실제로 적힌 것. "국가유공자할인과" → "국가유공자".
+    괄호 안 단서("(다만, 서울대공원은 …)")에만 나오는 장소 이름은 대상이 아니라서 괄호를 지우고 찾습니다."""
+    bare = [{**h, "text": re.sub(r"\([^()]*\)", "", h["text"])} for h in hits]
+    subs = []
+    for tok in re.findall(r"[가-힣]{2,}", question):
+        forms, w = [tok], tok
+        while True:                                   # 조사·'할인' 등을 하나씩 떼며 후보를 만듦 (긴 것부터)
+            w2 = SUBJ_SUFFIX.sub("", w)
+            if w2 == w or len(w2) < 2:
+                break
+            forms.append(w2)
+            w = w2
+        for f in reversed(forms):                 # 기본형부터 ("장애인이"보다 "장애인")
+            if len(f) >= 3 and f not in CLAIM_STOP and any(n for _, n, _ in _locate(f, bare)):
+                if f not in subs:
+                    subs.append(f)
+                break
+    # 목록 머리말에 나오는 말(운동시설·주차요금 등 요금 이름)은 대상이 아님
+    heads = "".join(re.sub(r"\s+", "", _ho_block(h, "", head=True)) for h in hits
+                    if any(HO_LINE.match(ln) for ln in h["text"].splitlines()) and _head_kind(h["text"]))
+    return [w for w in subs if w not in heads]
+
+
+def _check_list_sentences(question, answer, hits):
+    """답 문장이 말한 '대상 → 요금 목록(면제/감면)'을 조문 목록과 대조합니다 (모델이 claims에 안 적은 곁가지도 잡음).
+    예) "운동시설 이용료는 두 경우 모두 감면 대상" → 다둥이는 운동시설 감면 목록에 없음
+        "국가유공자는 입장료 감면 대상" → 국가유공자는 입장료 '면제' 목록에 있음
+    돌려줌: [(문장 번호, 확인된 사실)]. 판단할 수 없는 문장(요금이 둘 이상, 부정문, 종류 불명)은 건드리지 않습니다."""
+    lists = _list_lists(hits)
+    subs = _question_subjects(question, hits)
+    if not lists or not subs:
+        return []
+    bad = []
+    sents = [s for s in re.split(r"(?<=[.!?])\s+", answer.strip()) if s]
+    all_cores = {core for _, core, _, _ in lists}
+    by_label = {}
+    for h in hits:
+        by_label.setdefault(h["label"], h)
+    # 목록 머리말에 나오는 말(주차요금·입장료 등 요금 이름)은 대상이 아님
+    heads = "".join(re.sub(r"\s+", "", _ho_block(by_label[lb], "", head=True)) for lb, _, _, _ in lists if lb in by_label)
+    subs = [w for w in subs if w not in heads]
+    if not subs:
+        return []
+    for i, s in enumerate(sents):
+        s_cores = {c for c in all_cores if c in s}
+        if not s_cores:
+            continue
+        flagged, prev_named = False, []
+        for clause in re.split(r",\s*|(?<=고)\s+|(?<=며)\s+", s):
+            here_named = [w for w in subs if w in clause]
+            if flagged or re.search(r"없|아니|않|제외|빠져", clause):
+                prev_named = here_named or prev_named
+                continue
+            kind = "면제" if "면제" in clause else "감면" if re.search(r"감면|할인", clause) else None
+            if not kind:
+                prev_named = here_named or prev_named
+                continue
+            # 이 절이 말하는 요금: 절 안에 적힌 요금들(“운동시설 이용료와 주차요금은 둘 다 감면”), 없으면 문장의 유일한 요금
+            cores = {c for c in s_cores if c in clause} or (s_cores if len(s_cores) == 1 else set())
+            named = here_named
+            if not named and GROUP_REF.search(clause):
+                named = subs
+            # 주어를 생략한 절은 앞 절의 대상을 이어받습니다
+            # ("국가유공자나 다둥이는 입장료를 면제받을 수 있고, 운동시설 이용료는 100분의 50 감면받을 수 있습니다")
+            if not named and prev_named:
+                named = prev_named
+            prev_named = named or prev_named
+            for core in cores:
+                quals = [q for lb, c, q, k in lists if c == core and k == kind]
+                cands = [lb for lb, c, q, k in lists if c == core and k == kind and (q is None or q in s)]
+                if not named or not cands or (len(cores) > 1 and len(quals) != len(cands)):
+                    continue
+                for w in named:
+                    locs = _locate(w, hits)
+                    if locs and not any(lb in cands for lb, _, _ in locs):
+                        where = "; ".join(f"{lb.replace('서울특별시 ', '')}{(' ' + n + '호') if n else ''}"
+                                          f"{(' (' + k + ' 목록)') if k else ''}" for lb, n, k in locs[:4])
+                        bad.append((i, f"- '{w}'은(는) {core} {kind} 목록({cands[0].replace('서울특별시 ', '')})에 없다. "
+                                       f"근거에서 {where}에 적혀 있다."))
+                        flagged = True
+                        break
+                if flagged:
+                    break
+            # 감면율 대조: "임산부 할인과 장애인 할인은 각각 100분의 50" → 장애인 호에는 100분의 80
+            rates = {_norm_rate(r) for r in RATE_RE.findall(clause)}
+            if flagged or kind != "감면" or not rates or not named:
+                continue
+            labels = {lb for lb, c, q, k in lists if not cores or (c in cores and (q is None or q in s))}
+            # 대상마다 그 이름 뒤 ~ 다음 대상 이름 앞 구간의 감면율만 그 대상의 것으로 봅니다
+            # ("다둥이 할인은 100분의 50이므로 장애인 할인만 적용" → 50은 다둥이 것)
+            pos = sorted((clause.find(w), w) for w in named if w in clause)
+            for w in named:
+                if pos:
+                    k = next((j for j, (_, x) in enumerate(pos) if x == w), None)
+                    if k is None:
+                        continue
+                    seg = clause[pos[k][0]:pos[k + 1][0] if k + 1 < len(pos) else len(clause)]
+                    w_rates = {_norm_rate(r) for r in RATE_RE.findall(seg)}
+                else:
+                    w_rates = rates                 # "두 경우 모두 100분의 50"처럼 이름 없이 묶어 말한 경우
+                if not w_rates:
+                    continue
+                spots = [(lb, n) for lb, n, _ in _locate(w, hits) if lb in labels and n]
+                if not spots:
+                    continue
+                ok_texts = [_norm_rate(_ho_block(by_label[lb], n, head=True)) for lb, n in spots if lb in by_label]
+                if ok_texts and not any(r in t for r in w_rates for t in ok_texts):
+                    lb, n = spots[0]
+                    real = sorted({_norm_rate(x) for x in RATE_RE.findall(_ho_block(by_label[lb], n, head=True))})
+                    bad.append((i, f"- '{w}'의 감면율은 근거({lb.replace('서울특별시 ', '')} {n}호)에서 "
+                                   f"{', '.join(real) or '따로 적혀 있지 않다'}이다. 다른 대상의 감면율을 쓰지 말 것."))
+                    flagged = True
+                    break
+    return bad
+
+
+def _claims_still_stated(claims, answer, hits):
+    """문장을 뺀 뒤에도 답에 남아 있는 주장만 (뺀 문장의 요금 목록을 가리키는 주장은 검사하지 않음)."""
+    info = {lb: (c, k) for lb, c, _, k in _list_lists(hits)}
+    sents = re.split(r"(?<=[.!?])\s+", answer)
+    keep = []
+    for c in claims or []:
+        lk = info.get(c.get("label", ""))
+        if lk and not any(lk[0] in s and (lk[1] in s or (lk[1] == "감면" and "할인" in s)) for s in sents):
+            continue
+        keep.append(c)
+    return keep
 
 
 def _attempt(question, hits, reasoning_effort=None, timeout=None, convert=False, strict=False, feedback="", rounds=0):
@@ -1229,10 +1487,103 @@ def _attempt(question, hits, reasoning_effort=None, timeout=None, convert=False,
             by_label.setdefault(h["label"], h)
         used = [by_label[lb] for lb in dict.fromkeys(picked) if lb in by_label]
     # 주장 단위 검증: 대상을 엉뚱한 조항·호에 넣거나 면제/감면을 거꾸로 적었으면, 확인된 사실을 주고 한 번 다시 쓰게 합니다
+    # 문장 단위 목록 대조: claims에 안 적은 곁가지("운동시설도 둘 다 감면")까지 조문 목록과 맞춰 봅니다.
+    # 틀린 곁가지 문장은 빼고, 결론(첫 문장)이 틀렸으면 확인된 사실을 주고 다시 쓰게 합니다.
+    if CLAIM_CHECK and out.get("found"):
+        bad = _check_list_sentences(question, out["answer"], hits)
+        # 질문이 특정 요금(예: 운동시설 이용료)을 물었는데 결론(첫 문장)이 다른 요금(입장료)만 말하면 다른 질문에 답한 것
+        lists_q = _list_lists(hits)
+        s1_ans = re.split(r"(?<=[.!?])\s+", out["answer"].strip(), maxsplit=1)[0]
+        q_fee = {(c, q) for _, c, q, _ in lists_q if c in question and (q is None or q in question)}
+        a_fee = {(c, q) for _, c, q, _ in lists_q if c in s1_ans and (q is None or q in s1_ans)}
+        if q_fee and a_fee and not (q_fee & a_fee):
+            asked = ", ".join(f"{q + ' ' if q else ''}{c}" for c, q in q_fee)
+            bad = [(0, f"- 질문은 {asked}을(를) 묻는다. 그 요금의 목록 기준으로 결론을 쓸 것.")] + bad
+        # 중복 제한 규칙이 근거(인용한 조례)에 없는데 "한 번만 적용 / 두 번 받지 않는다"고 단정한 문장은 추론입니다
+        # ("65세+장애인 운동시설 이용료 두 번?" → "두 사유가 겹쳐도 감면은 한 번만 적용됩니다")
+        laws_used = {h.get("law") for h in used}
+        has_rule = any(RULE_TEXT.search(_label_text(h["label"]) or h["text"]) for h in hits if h.get("law") in laws_used)
+        if not has_rule and re.search(r"할인|감면|면제|요금|료|혜택", question):
+            for i, s in enumerate(re.split(r"(?<=[.!?])\s+", out["answer"].strip())):
+                if DUP_INFER.search(s) or RULE_CLAIM.search(s):
+                    bad.append((i, "- 근거에 둘 이상의 감면·면제 사유를 겹쳐 적용하는지 정한 규정이 없다. "
+                                   "'한 번만 적용된다'고 단정하지 말고, 겹쳐 적용하는지는 조례에 정해져 있지 않다고 쓸 것."))
+        # 요금·혜택을 겹쳐 받는지 묻는 질문만 ("미끄럼 방지시설도 같이 보나요?"의 '같이'는 해당 없음)
+        if is_multi_q(question) and re.search(r"할인|감면|면제|요금|료|혜택", question):
+            subs_m = _question_subjects(question, hits)
+            # 중복 제한 규정도 없는데 "둘 다/두 번 받을 수 있나요?"에 "네"로 답하면, 겹쳐 받는다는 근거 없는 결론
+            if not has_rule and out["answer"].lstrip().startswith("네"):
+                bad = [(0, "- 근거에 둘 이상의 사유를 겹쳐 적용한다는 규정이 없다. '네'로 단정하지 말고, 각 대상이 어느 목록에 "
+                           "있는지 쓴 뒤 겹쳐 적용하는지는 조례에 정해져 있지 않다고 쓸 것 "
+                           "(둘 다 면제 대상이면 하나만 해당해도 면제라고 쓸 것).")] + bad
+            # 질문한 대상이 모두 들어 있는 목록이 있는데, 답이 그런 목록(요금·면제/감면)을 하나도 말하지 않으면 핵심이 빠진 답
+            # ("서울대공원 국가유공자+다둥이 둘 다?"에 두 대상이 모두 있는 입장료 면제 목록 대신 운동시설 감면만 말함)
+            if len(subs_m) >= 2:
+                full = [(lb, c, q, k) for lb, c, q, k in lists_q
+                        if all(any(l[0] == lb for l in _locate(w, hits)) for w in subs_m)]
+                kw = {"면제": r"면제", "감면": r"감면|할인"}
+                if full and not any(c in out["answer"] and re.search(kw[k], out["answer"]) and (q is None or q in out["answer"])
+                                    for _, c, q, k in full):
+                    lb, c, q, k = full[0]
+                    bad = [(0, f"- 질문한 대상 {', '.join(subs_m)}은(는) 모두 {q + ' ' if q else ''}{c} {k} 목록"
+                               f"({lb.replace('서울특별시 ', '')})에 있다. 이 목록을 기준으로 결론을 쓸 것.")] + bad
+            # 질문한 대상이 모두 같은 요금 목록에 있는데 "서로 다른 요금에 대한 혜택"이라고 하면 틀린 설명
+            if len(subs_m) >= 2 and re.search(r"서로\s*다른\s*요금", out["answer"]):
+                same = [lb for lb, _, _, _ in lists_q
+                        if all(any(l[0] == lb for l in _locate(w, hits)) for w in subs_m)]
+                if same:
+                    i_bad = next(i for i, s in enumerate(re.split(r"(?<=[.!?])\s+", out["answer"].strip()))
+                                 if re.search(r"서로\s*다른\s*요금", s))
+                    bad.append((i_bad, f"- 질문한 대상 {', '.join(subs_m)}은(는) 모두 같은 목록"
+                                       f"({same[0].replace('서울특별시 ', '')})에 있다. 서로 다른 요금의 혜택이 아니다."))
+        # "국가유공자는 입장료 감면 목록에 없다"고만 하고, 같은 요금의 면제 목록에 있다는 걸 빼면 틀린 설명이 됨
+        subs_n = _question_subjects(question, hits)
+        sents_n = re.split(r"(?<=[.!?])\s+", out["answer"].strip())
+        for i, s in enumerate(sents_n):
+            for clause in re.split(r",\s*|(?<=고)\s+|(?<=며)\s+", s):
+                if not SUBJ_NOT_LISTED.search(clause):
+                    continue
+                for w in [x for x in subs_n if x in clause]:
+                    for lb, core, q, kind in lists_q:
+                        if core not in s or (q and q not in s):
+                            continue
+                        spot = [l for l in _locate(w, hits) if l[0] == lb and l[1]]
+                        other_kind = "면제" if kind == "면제" else "감면"
+                        if spot and not any(w in s2 and core in s2 and other_kind in s2 and not SUBJ_NOT_LISTED.search(s2)
+                                            for s2 in sents_n):
+                            bad.append((i, f"- '{w}'은(는) {core} {kind} 목록({lb.replace('서울특별시 ', '')} {spot[0][1]}호)에 있다. "
+                                           f"그 사실을 빼고 '목록에 없다'고만 쓰지 말 것."))
+                            break
+        # "네"로 시작했는데 답 스스로 질문한 대상이 목록에 없다고 말하면 결론이 거꾸로 된 것
+        # ("네, 감면될 수 있습니다. … 다만 감면 대상 목록에는 다둥이 행복카드가 적혀 있지 않아 …")
+        if out["answer"].lstrip().startswith("네"):
+            subs_q = _question_subjects(question, hits)
+            for s in re.split(r"(?<=[.!?])\s+", out["answer"])[1:]:
+                gone = [w for w in subs_q if w in s and SUBJ_NOT_LISTED.search(s)]
+                if gone:
+                    bad = [(0, f"- '{gone[0]}'은(는) 질문한 요금의 목록에 없다. 결론은 '아니요'로 쓸 것.")] + bad
+                    break
+        if bad:
+            sents_l = [s for s in re.split(r"(?<=[.!?])\s+", out["answer"].strip()) if s]
+            drop = {i for i, _ in bad}
+            merged = "\n".join(dict.fromkeys((feedback + "\n" + "\n".join(f for _, f in bad)).strip().splitlines()))
+            left_l = [s for i, s in enumerate(sents_l) if i not in drop and not BARE_YES.match(s)
+                      and not re.search(r"(따라|마다)\s*(다릅니다|달라집니다)\.?\s*$", s)]
+            # 결론이 틀렸거나, 빼고 나면 내용이 안 남거나, "네, 감면될 수 있습니다."처럼 짧은 결론의 근거 문장(둘째)을 빼면 다시 쓰기
+            if 0 in drop or not left_l or (1 in drop and BARE_YES.match(sents_l[0])):
+                if rounds >= CLAIM_ROUNDS:
+                    _last_claim_facts.v = merged
+                    return None, "claim_mismatch"
+                return _attempt(question, hits, reasoning_effort, timeout, convert, strict, feedback=merged, rounds=rounds + 1)
+            removed = " ".join(s for i, s in enumerate(sents_l) if i in drop)
+            out["answer"] = " ".join(s for i, s in enumerate(sents_l) if i not in drop)
+            used = _drop_removed_citations(out["answer"], removed, used)
+            out["claims"] = _claims_still_stated(out.get("claims"), out["answer"], hits)
     if CLAIM_CHECK and out.get("found") and out.get("claims"):
-        ok, facts = _check_claims(out["claims"], hits)
+        ok, facts = _check_claims(out["claims"], hits, out["answer"])
         if not ok:
             if rounds >= CLAIM_ROUNDS:
+                _last_claim_facts.v = "\n".join(dict.fromkeys((feedback + "\n" + facts).strip().splitlines()))
                 return None, "claim_mismatch"
             # 앞 회차에서 알려 준 사실도 함께 줍니다 (새로 틀린 주장이 나와도 앞의 바로잡기를 잃지 않게)
             facts = "\n".join(dict.fromkeys((feedback + "\n" + facts).strip().splitlines()))
@@ -1289,7 +1640,12 @@ def _attempt(question, hits, reasoning_effort=None, timeout=None, convert=False,
     def method_fix(s):
         return _method_fix(s, used)
 
-    head_no_rule = (NO_RULE.search(sents[0]) and not name_ack and not method_fix(sents[0])
+    # 목록을 보고 "그 대상은 이 목록에 없다"고 답한 것은 규정 없음이 아니라 목록에 따른 답입니다
+    # ("다둥이 행복카드 있으면 운동시설 이용료 감면?" → "아니요, 감면 대상에 포함되어 있지 않습니다").
+    # 대상 이름이 근거의 다른 목록에는 실제로 있을 때만 (어느 목록에도 없는 대상은 지금처럼 확인 불가)
+    list_negative = bool(SUBJ_NOT_LISTED.search(sents[0]) and _list_lists(used)
+                         and any(w in sents[0] for w in _question_subjects(question, hits)))
+    head_no_rule = (NO_RULE.search(sents[0]) and not name_ack and not method_fix(sents[0]) and not list_negative
                     and not (re.search(r"둘\s*다|중복|함께|같이|동시에|겹", question)
                              and re.search(r"중복|함께|같이|동시에|겹", sents[0]) and len(sents) > 1)) \
         or STRONG_NO_RULE.search(out["answer"])      # "허용하는 규정은 아니고" 류는 어느 문장에 있어도 결론
@@ -1316,7 +1672,16 @@ def _attempt(question, hits, reasoning_effort=None, timeout=None, convert=False,
         # "따라서 …"처럼 결론을 뒤집는 문장이면 지금처럼 막습니다.
         tails = [x for x in sents[1:] if NO_RULE.search(x) and not method_fix(x) and not names_absent(x)]
         # 단, "… 이 근거만으로 확인할 수 없습니다"처럼 질문의 핵심에 답할 수 없다는 고백이면 떼지 않고 막습니다 (함정 방어)
-        if TAIL_STRIP and tails and all(re.match(r"\s*(다만|단,|단\s)", x) for x in tails)                 and not any(re.search(r"(답할|확인할|판단할|알|말할)\s*수\s*(가\s*)?없|확인되지\s*않|근거만으로는", x) for x in tails):
+        # 또는 질문·결론(첫 문장)에 없는 다른 대상을 주어로 세운 문장("자전거 이용요금은 … 정해져 있지 않습니다")이면
+        # 묻지 않은 것에 대한 덧붙임이라 그 문장만 뗍니다. 주어가 질문·결론에 나오는 것이면 지금처럼 막습니다.
+        def other_topic(x):
+            m = re.match(r"\s*([가-힣·\s]{2,20}?)(?:은|는)\s", x)
+            if not m:
+                return False
+            words = [w for w in _hangul_words(m.group(1)) if len(w) >= 2]
+            return bool(words) and not any(w[:2] in question or w[:2] in sents[0] for w in words)
+        if TAIL_STRIP and tails and all(re.match(r"\s*(다만|단,|단\s)", x) or other_topic(x) for x in tails) \
+                and not any(re.search(r"(답할|확인할|판단할|알|말할)\s*수\s*(가\s*)?없|확인되지\s*않|근거만으로는", x) for x in tails):
             out["answer"] = " ".join(x for x in sents if x not in tails)
             sents = [x for x in sents if x not in tails]
         else:
@@ -1380,7 +1745,16 @@ def _attempt(question, hits, reasoning_effort=None, timeout=None, convert=False,
             drop = set(unneeded) - {1}
             if len(sents_v) > 1 and BARE_YES.match(sents_v[0]):
                 drop -= {2}                        # "네, 이용할 수 있습니다."만 남지 않게 그 근거 문장은 둡니다
+            if is_multi_q(question):              # "같이 받을 수 있나요?"의 결론(중복 제한) 문장은 빼지 않습니다
+                drop -= {i for i, x in enumerate(sents_v, 1)
+                         if RULE_CLAIM.search(x) or re.search(r"(함께|같이|둘\s*다|중복)[^.]{0,15}(받을\s*수\s*(는\s*)?없|적용되지\s*않)", x)}
             keep = [x for i, x in enumerate(sents_v, 1) if i not in drop]
+            # 덜어낸 뒤 "네, 받을 수 있습니다. 다만 어떤 요금인지에 따라 다릅니다."처럼 내용 문장이 하나도 안 남으면
+            # 편집이 답을 지운 것이라 덜어내지 않습니다.
+            content = [x for x in keep if not BARE_YES.match(x)
+                       and not re.search(r"(따라|마다)\s*(다릅니다|달라집니다)\.?\s*$", x)]
+            if not content:
+                keep = sents_v
             if len(keep) < len(sents_v):
                 removed = [x for i, x in enumerate(sents_v, 1) if i in drop]
                 out["answer"] = " ".join(keep)
@@ -1405,16 +1779,23 @@ def _attempt(question, hits, reasoning_effort=None, timeout=None, convert=False,
         ans = re.sub(r"^\s*(네|예)\s*,\s*", "", ans)   # "네, 각각 대상입니다. 다만 함께 받을 수는 없습니다" → 결론은 '아니요'
         if not ans.startswith("아니요"):
             ans = "아니요, " + ans
-        # "아니요, 둘 다 받을 수 있지만 …"처럼 결론과 어긋난 앞부분을 "둘 다 해당하더라도"로
-        ans = re.sub(r"^아니요,\s*(?:둘\s*다|모두|각각)\s*(?:받을|해당할|적용받을)\s*수\s*(?:는\s*)?있지만\s*,?\s*", "아니요, 둘 다 해당하더라도 ", ans)
-        ans = re.sub(r"^아니요,\s*(?:둘\s*다|모두|각각)\s*(?:받을|해당할|적용받을)\s*수\s*(?:는\s*)?있습니다\.\s*(?:다만\s*)?", "아니요, ", ans)
+        ans = _drop_contradicting_yes(ans)
     # 둘 다 면제 대상이면 '두 번 받는' 것이 아니므로 "네, 둘 다 받을 수 있습니다"로 시작하지 않습니다
-    both_exempt = re.search(r"(모두|둘\s*다|각각)[^.]{0,40}면제\s*대상|면제\s*대상[^.]{0,30}(모두|둘\s*다)", ans)         or len(re.findall(r"면제\s*(대상|받)", ans)) >= 2
+    both_exempt = re.search(r"(모두|둘\s*다|각각)[^.]{0,40}면제\s*대상|면제\s*대상[^.]{0,30}(모두|둘\s*다)", ans) \
+        or len(re.findall(r"면제\s*(대상|받)", ans)) >= 2 \
+        or re.search(r"면제[^.]{0,40}하나만\s*해당해도[^.]{0,15}(내지\s*않|면제)", ans)   # "면제받을 수 있는 대상이라, 하나만 해당해도 내지 않습니다"
     if not is_content_q(question) and both_q and both_exempt and not limit.search(ans):
-        ans = re.sub(r"^\s*네\s*,\s*(?:(?:두\s*할인\s*)?(?:둘\s*다|모두)\s*(?:받을|면제받을)\s*수\s*있습니다\.\s*)?", "", ans)
-        ans = re.sub(r"^\s*(?:두\s*할인\s*)?(?:둘\s*다|모두)\s*받을\s*수\s*있습니다\.\s*(?:다만\s*)?", "", ans)
+        ans = re.sub(r"^\s*네\s*,\s*(?:(?:두\s*할인\s*)?(?:둘\s*다|모두)\s*(?:받을|면제받을|적용받을)\s*수\s*있습니다\.\s*)?", "", ans)
+        ans = re.sub(r"^\s*(?:두\s*(?:할인|혜택)\s*)?(?:둘\s*다|모두)\s*(?:받을|면제받을|적용받을)\s*수\s*있습니다\.\s*(?:다만\s*)?", "", ans)
         if not re.search(r"하나만\s*해당", ans):
             ans = ans.rstrip() + " 둘 중 하나만 해당해도 면제되므로 겹쳐 받을 할인은 없습니다."
+    # "둘 다/두 번 받을 수 있나요?"인데 중복 제한 규정도 없고, 답이 겹쳐 적용 여부를 말하지 않았으면 그 사실을 덧붙임
+    # ("65세 이상이고 장애인이면 운동시설 이용료 감면 두 번?" → 각각 감면 대상이라고만 답함)
+    elif not is_content_q(question) and both_q and not limit.search(ans) \
+            and re.search(r"할인|감면|면제|요금|료", question) and re.search(r"할인|감면|면제", ans) \
+            and not any(RULE_TEXT.search(_label_text(h["label"]) or h["text"]) for h in used) \
+            and not re.search(r"정해져\s*있지\s*않|정하고\s*있지\s*않|규정(이|은|을)?\s*(따로\s*)?(없|두고\s*있지\s*않)", ans):
+        ans = ans.rstrip() + " 같은 요금에 두 사유를 겹쳐 적용하는지는 조례에 정해져 있지 않습니다."
     if not is_content_q(question) and not re.match(r"\s*(네|아니요|예)\s*[,.]", ans):
         s1 = re.split(r"(?<=[.!?])\s", ans, maxsplit=1)[0].strip()
         if NEG_END.search(s1) and re.search(r"(나요|까요|니까|되요|돼요|가요|어요|해요|수\s*있어|\?)\s*$", question.strip()):
@@ -1527,6 +1908,23 @@ def _attempt(question, hits, reasoning_effort=None, timeout=None, convert=False,
     ans = _drop_ungrounded_delegation(ans, used)
     if USE_TOPIC_FILTERS:
         used = _drop_offtopic_paragraphs(ans, used)
+    # 중복 제한 규칙("높은 하나만")을 말했는데, 인용 정리 뒤 남은 근거에 그 규칙이 없으면 근거 없는 규칙입니다.
+    # (서울대공원 입장료 답에 "같은 요금 안에서는 높은 하나만"이 남고 주차장 조례 제7조 제3항 인용만 빠진 일)
+    if _G and RULE_CLAIM.search(ans) and not any(RULE_TEXT.search(_label_text(h["label"]) or h["text"]) for h in used):
+        return None, "unsupported_rule"
+    # 편집·정리 단계에서 핵심 문장이 빠졌는지 마지막에 한 번 더: 질문한 대상이 모두 들어 있는 목록(예: 입장료 면제)이
+    # 있는데 최종 답이 그 목록을 하나도 말하지 않으면 2차로 다시 씁니다 (1차 검사 뒤 편집이 그 문장을 지운 일)
+    if _G and is_multi_q(question) and re.search(r"할인|감면|면제|요금|료|혜택", question):
+        subs_f = _question_subjects(question, hits)
+        if len(subs_f) >= 2:
+            kw_f = {"면제": r"면제", "감면": r"감면|할인"}
+            full_f = [(c, q, k) for lb, c, q, k in _list_lists(hits)
+                      if all(any(l[0] == lb for l in _locate(w, hits)) for w in subs_f)]
+            if full_f and not any(c in ans and re.search(kw_f[k], ans) and (q is None or q in ans) for c, q, k in full_f):
+                return None, "key_list_dropped"
+    # 정리 끝에 "아니요, 둘 다 받을 수는 없습니다."처럼 결론 한 줄만 남으면(근거 문장·인용이 빠짐) 2차로 다시 씁니다
+    if _G and BARE_YES.match(ans.strip()) and len(re.split(r"(?<=[.!?])\s+", ans.strip())) == 1:
+        return None, "bare_answer"
     citation = list(dict.fromkeys(h["label"] for h in used))
     first = used[0]
     return {"answer": ans, "citation": citation,
@@ -1572,12 +1970,90 @@ def _drop_cross_domain(question, hits):
     return hits
 
 
+DUP_INFER = re.compile(r"한\s*번만\s*(적용|감면|할인|받)|두\s*번\s*(감면|할인|받|적용)[^.]{0,10}(않|없|못|아니)"
+                       r"|중복(하여|해서)?\s*(적용|감면)되지\s*않")
+RACE_NO_RETRY = ("name_mismatch", "annex_only", "off_topic", "no_rule_answer", "no_amount")
+
+
+def _race(fn, n):
+    """fn()을 n번 동시에 돌려 먼저 성공한 (결과, 이유, 사실)을 돌려줍니다. Solar 답이 실행마다 흔들려
+    같은 질문이 10번 중 1~3번 확인 불가로 끝나던 것을 줄이려는 장치 (동시에 돌리므로 시간은 거의 같고 호출 수만 늘어남).
+    모두 실패면 다음 단계로 이어갈 수 있는 실패(재시도 가능, 확인된 사실 있음)를 고릅니다."""
+    if n <= 1:
+        return fn()
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    pool = ThreadPoolExecutor(n)
+    outs = []
+    try:
+        for fut in as_completed([pool.submit(fn) for _ in range(n)]):
+            outs.append(fut.result())
+            wins = [o for o in outs if o[0]]
+            if len(wins) >= 2:                  # 둘 이상 통과하면 바로 씀
+                return wins[0]
+    finally:
+        pool.shutdown(wait=False)
+    wins = [o for o in outs if o[0]]
+    # 하나만 통과했을 때: 나머지가 '근거 없음' 신호(못 찾음·규정 없음·질문과 다름·이름 다름 등)를 냈으면
+    # 함정 질문에서 한 번 샌 것일 수 있어 쓰지 않습니다 (먼저 통과한 것을 쓰면 함정 54개 중 3→5개로 샜음).
+    # 나머지가 검증 탈락·주장 불일치처럼 '답은 있는데 다듬다 떨어진' 경우면 통과한 답을 씁니다.
+    hard = [o for o in outs if not o[0] and (o[1] in RACE_NO_RETRY or o[1] in ("not_found", "low_score"))]
+    if len(wins) == 1 and not hard:
+        return wins[0]
+    fails = [o for o in outs if not o[0]]
+    fails.sort(key=lambda o: (o[1] in RACE_NO_RETRY, not o[2]))
+    if hard and len(wins) == 1:
+        return hard[0]
+    return fails[0]
+
+
+_law_flat = {}
+
+
+def _anchor_law_only(question, hits):
+    """중복(둘 다·같이) 질문에서, 질문 낱말 중 6개 조례 가운데 한 조례에만 나오는 말(예: 서울대공원·입장료 → 도시공원 조례,
+    공영주차장 → 주차장 조례)이 있고 그 조례가 하나로 모이면 근거를 그 조례로 좁힙니다.
+    '서울대공원 국가유공자+다둥이 둘 다?'에 주차장 조례 제7조(주차요금 감면·높은 하나만)가 섞여 주차요금으로 답이 새던 일.
+    한 조례로 모이지 않으면(장애인·다둥이처럼 여러 조례에 나오는 말뿐이면) 그대로 둡니다."""
+    if not is_multi_q(question):
+        return hits
+    if not _law_flat:
+        for c in _load()[0]:
+            _law_flat[c["law"]] = _law_flat.get(c["law"], "") + re.sub(r"\s+", "", c["text"])
+    anchors, word_laws = set(), []
+    for tok in re.findall(r"[가-힣]{3,}", question):
+        forms, w = [tok], tok
+        while True:
+            w2 = SUBJ_SUFFIX.sub("", w)
+            if w2 == w or len(w2) < 3:
+                break
+            forms.append(w2)
+            w = w2
+        for f in reversed(forms):                 # 조사를 뗀 기본형부터 ("장애인이"는 주차장 조례에만 있지만 "장애인"은 여러 조례)
+            if f in CLAIM_STOP or re.search(r"(이|가|은|는|을|를|면|서|도|요|고|에|의|과|와|랑|며)$", f):
+                break                             # 조사·어미가 붙은 꼴("감면이")은 조례 하나를 가리키는 이름이 아님
+            laws = [lw for lw, t in _law_flat.items() if f in t]
+            if laws:
+                word_laws.append(set(laws))
+                if len(laws) == 1:
+                    anchors.add(laws[0])
+                break
+    if len(anchors) != 1:
+        return hits
+    law = anchors.pop()
+    # 질문의 다른 말이 그 조례에 없으면(“서울대공원 입장료랑 주차요금”의 주차요금) 여러 조례를 묻는 질문이라 좁히지 않음
+    if any(law not in ls for ls in word_laws):
+        return hits
+    kept = [h for h in hits if h.get("law") == law]
+    return kept or hits
+
+
 def answer(question, trace=None, convert=False):
     """trace에 리스트를 넘기면 시도별 결과(성공/실패 이유)를 적어 줍니다. 진단용.
     convert=True는 웹 화면용: "10분 요금"처럼 요금표 단위의 배수를 물으면 환산한 금액으로 답합니다.
     제출용 POST /ask는 False(조례에 적힌 금액 그대로)."""
     trace = [] if trace is None else trace
     t0 = time.time()
+    _last_claim_facts.v = ""
 
     # 6개 조례 밖 다른 조례 소관 질문은 검색 전에 '확인 불가' (빠르고, 비슷한 제도로 대신 답하는 일을 막음)
     if config.USE_VERIFY:
@@ -1588,7 +2064,7 @@ def answer(question, trace=None, convert=False):
     if config.USE_VERIFY and GU_NAMES.search(question) and GU_RULE_Q.search(question):
         trace.append("district_question")
         return dict(UNKNOWN)
-    hits = _drop_cross_domain(question, retrieve(question))
+    hits = _anchor_law_only(question, _drop_cross_domain(question, retrieve(question)))
 
     # 검증 ①: 검색 단계에서 이미 관련 조문이 없어 보이면 바로 '확인 불가'
     if config.USE_VERIFY and hits and hits[0]["cos"] is not None and hits[0]["cos"] < config.MIN_SCORE:
@@ -1599,10 +2075,18 @@ def answer(question, trace=None, convert=False):
     # Solar의 답이 실행마다 흔들려서, 근거를 찾고도 '확인 불가'로 뒤집히는 일을 줄이기 위한 장치입니다.
     # 함정 문항도 2차를 거치지만, 2차 역시 같은 검증을 통과해야 하므로 지어낸 답은 걸러집니다.
     # 추론 모드는 가끔 40~60초가 걸려서, 질문당 RETRY_DEADLINE_SEC 안에서만 2차를 기다립니다.
-    try:
-        result, reason = _attempt(question, hits, convert=convert)
-    except Exception as e:  # noqa: BLE001  응답 형식 오류(JSONDecodeError 등)·일시적 API 오류는 2차로 한 번 더
-        result, reason = None, f"error:{type(e).__name__}"
+    # 1차를 FIRST_TRIES번 동시에 돌려, 검증을 먼저 통과한 답을 씁니다. Solar 답이 실행마다 흔들려
+    # 같은 질문이 10번 중 1~3번 확인 불가로 끝나던 것을 줄이려는 장치 (동시에 돌리므로 시간은 거의 같고 호출 수만 늘어남).
+    def _one():
+        _last_claim_facts.v = ""
+        try:
+            r, why = _attempt(question, hits, convert=convert)
+        except Exception as e:  # noqa: BLE001  응답 형식 오류·일시적 API 오류
+            r, why = None, f"error:{type(e).__name__}"
+        return r, why, getattr(_last_claim_facts, "v", "")
+
+    result, reason, facts = _race(_one, FIRST_TRIES)
+    _last_claim_facts.v = facts
     trace.append(reason or "ok")
     if result or not config.RETRY_ON_UNKNOWN:
         return result or dict(UNKNOWN)
@@ -1610,6 +2094,11 @@ def answer(question, trace=None, convert=False):
     # 단, "5분당 얼마"처럼 단위를 붙여 물은 금액 질문은 전제가 틀렸을 뿐 답이 있을 수 있어 2차를 허용합니다.
     # (검증기가 "5분당 금액을 안 댔다"며 off_topic으로 떨어뜨리는 일도 있어 함께 허용. 2차도 같은 검증을 통과해야 함)
     unit_q = UNIT_Q.search(question) and reason in ("no_rule_answer", "no_amount", "off_topic")
+    # "둘 다/같이 받을 수 있나요?"는 요금마다 답이 갈려 답이 길어지고, 검증기가 "질문에 바로 답하지 않았다"(off_topic)로
+    # 떨어뜨리는 일이 잦습니다 (같은 질문이 10번 중 1~2번). 2차를 허용하고, 2차도 같은 검증을 통과해야 합니다.
+    unit_q = unit_q or (is_multi_q(question) and reason in ("off_topic", "no_rule_answer"))
+    # 면제·감면 목록에 실제로 있는 대상을 물은 질문("다둥이 → 운동시설 감면?")도 off_topic이면 2차 허용 (2차도 같은 검증)
+    unit_q = unit_q or (reason == "off_topic" and bool(_question_subjects(question, hits)))
     if reason in ("name_mismatch", "annex_only") or (reason in ("off_topic", "no_rule_answer", "no_amount") and not unit_q):
         return dict(UNKNOWN)
     # 2차는 검색도 다시 합니다. 질문 재작성이 실행마다 달라서, 가끔 정답 조가 1차 검색에서 빠집니다
@@ -1617,7 +2106,7 @@ def answer(question, trace=None, convert=False):
     if config.RETRY_RESEARCH:
         try:
             have = {h["id"] for h in hits}
-            extra = [h for h in _drop_cross_domain(question, retrieve(question)) if h["id"] not in have]
+            extra = [h for h in _anchor_law_only(question, _drop_cross_domain(question, retrieve(question))) if h["id"] not in have]
             hits = hits + extra[:max(0, config.MAX_CONTEXT - len(hits))]
         except Exception:  # noqa: BLE001  재검색 실패면 1차 근거로 그대로 2차
             pass
@@ -1625,11 +2114,28 @@ def answer(question, trace=None, convert=False):
     if left < 10:                               # 남은 시간이 너무 짧으면 2차는 건너뜁니다
         trace.append("skip_retry")
         return dict(UNKNOWN)
-    try:
-        result, reason = _attempt(question, hits, config.RETRY_EFFORT, timeout=left, convert=convert,
+    first_facts = getattr(_last_claim_facts, "v", "")
+
+    def _retry_one():
+        _last_claim_facts.v = ""
+        try:
+            if trace[0] == "claim_mismatch" and first_facts:
+                # 1차가 대상을 목록에서 잘못 읽어 끝났으면, 확인된 사실을 들고 빠른 모드로 다시 씁니다.
+                # 추론 모드는 이런 긴 답에서 40초를 넘겨 시간 초과로 끝나는 일이 잦았고, 사실 없이 다시 쓰면 같은 실수를 반복했습니다.
+                # 다시 써도 안 맞으면 재질문 없이 바로 실패(rounds=CLAIM_ROUNDS).
+                r, why = _attempt(question, hits, timeout=left, convert=convert,
+                                  feedback=first_facts, rounds=CLAIM_ROUNDS)
+            else:
+                # 추론 모드는 1차가 근거를 못 찾았을 때(not_found)만, 남은 시간이 50초 이상일 때만 씁니다.
+                # 검증 탈락 뒤 추론 모드 2차는 25~45초 걸려 시간 초과가 잦았음
+                effort = config.RETRY_EFFORT if (left >= 50 and trace[0] == "not_found") else None
+                r, why = _attempt(question, hits, effort, timeout=left, convert=convert,
                                   strict=STRICT_RETRY and trace[0] == "not_found")
-    except Exception as e:  # noqa: BLE001  시간 초과 등 2차 실패는 '확인 불가'로
-        result, reason = None, f"retry_error:{type(e).__name__}"
+        except Exception as e:  # noqa: BLE001  시간 초과 등 2차 실패는 '확인 불가'로
+            r, why = None, f"retry_error:{type(e).__name__}"
+        return r, why, getattr(_last_claim_facts, "v", "")
+
+    result, reason, _ = _race(_retry_one, FIRST_TRIES)   # 2차도 동시에 여러 번 돌려 먼저 통과한 답
     trace.append(reason or "ok")
     # 2차가 응답 형식 오류로 끝났으면(드묾) 시간이 남을 때 빠른 모드로 한 번 더
     left = config.RETRY_DEADLINE_SEC - (time.time() - t0)
