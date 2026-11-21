@@ -32,6 +32,9 @@ USE_TOPIC_FILTERS = _os.environ.get("RAG_TOPIC", "0") == "1"
 TAIL_STRIP = "tail" not in LEAN       # 덧붙인 '정해져 있지 않다' 문장을 떼고 검증기에 맡김 (RAG_LEAN=tail 이면 끔)
 RELATED_ITEMS = "items" not in LEAN   # 긴 목록 항에 '질문과 관련된 호' 표시 (RAG_LEAN=items 이면 끔)
 CITE_SOFT_MAX = 1                     # 인용이 이보다 많으면 새 내용을 보탠 근거만 남김
+# 인용 상한 (2026-11-21 운영 공지: 인용 수가 정답 근거 수보다 2개 넘게 많으면 넘친 비율만큼 감점).
+# 정답 근거는 거의 1~2개라 3개까지는 어떤 문항에서도 감점되지 않습니다. 넘치면 첫 근거 + 답과 가장 많이 겹치는 근거만 남깁니다.
+CITE_HARD_MAX = int(_os.environ.get("RAG_CITE_MAX", "3"))
 RELATED_MIN_ITEMS = 5                 # 호가 이만큼 이상인 항에만 표시
 RELATED_KEEP = 3                      # 표시할 호 최대 개수
 RELATED_COMMON = 0.25                 # 그 항의 호 중 이 비율 이상에 나오는 글자쌍은 목록 공통어로 보고 뺌
@@ -839,6 +842,29 @@ def _drop_other_law_citations(ans, used):
             continue
         out.append(h)
     return out
+
+
+def _cap_citations(ans, used):
+    """인용이 CITE_HARD_MAX개를 넘으면 첫 근거(모델이 고른 대표 근거)와, 답 본문에 그 근거만의 낱말이 가장 많이
+    들어 있는 근거 순으로 남깁니다. 답에 금액·비율이 있으면 별표(요금표)를 먼저 남깁니다. 남은 것의 순서는 그대로."""
+    uniq = list({h["label"]: h for h in used}.values())
+    if CITE_HARD_MAX <= 0 or len(uniq) <= CITE_HARD_MAX:
+        return used
+    flat = re.sub(r"[^가-힣]", "", ans)          # 조문 쪽과 같게 한글만 남겨 비교
+    amount = bool(re.search(r"\d\s*(원|%|퍼센트)|무료|면제", ans))
+
+    def words(h):
+        # 글자 3개 묶음으로 비교 (낱말 비교는 '고시하여야'↔'고시해야' 같은 활용형 차이에 약했음)
+        text = re.sub(r"\[[^\]]*\]", " ", _label_text(h["label"]) or h["text"])
+        t = re.sub(r"[^가-힣]", "", _without_law_names(text))
+        return {t[i:i + 3] for i in range(len(t) - 2)}
+    base = words(uniq[0])
+    scored = []
+    for k, h in enumerate(uniq[1:], 1):
+        w = words(h)
+        scored.append(((amount and "별표" in h["label"]), sum(x in flat for x in w - base), sum(x in flat for x in w), -k, h["label"]))
+    keep = {t[-1] for t in sorted(scored, reverse=True)[:CITE_HARD_MAX - 1]}
+    return [uniq[0]] + [h for h in uniq[1:] if h["label"] in keep]
 
 
 def _drop_unused_citations(ans, used):
@@ -1925,6 +1951,7 @@ def _attempt(question, hits, reasoning_effort=None, timeout=None, convert=False,
     # 정리 끝에 "아니요, 둘 다 받을 수는 없습니다."처럼 결론 한 줄만 남으면(근거 문장·인용이 빠짐) 2차로 다시 씁니다
     if _G and BARE_YES.match(ans.strip()) and len(re.split(r"(?<=[.!?])\s+", ans.strip())) == 1:
         return None, "bare_answer"
+    used = _cap_citations(ans, used)
     citation = list(dict.fromkeys(h["label"] for h in used))
     first = used[0]
     return {"answer": ans, "citation": citation,
@@ -2047,7 +2074,94 @@ def _anchor_law_only(question, hits):
     return kept or hits
 
 
+# ------------------------------------------------------------ 위임 조항 답변 (2026-11-21 운영 예시 반영)
+# "반려견 놀이터 운영 시간"처럼 조례가 세부를 직접 정하지 않고 "그 밖에 ~에 필요한 사항은 시장이 따로 정한다"로 맡긴 경우,
+# 확인 불가가 아니라 그 위임 조항을 근거로 "조례에는 정해져 있지 않고 시장이 따로 정한다"고 답합니다.
+# 위임 조항이 질문한 바로 그 시설·제도를 맡긴 경우에만 (대상이 다르면 지금처럼 확인 불가).
+DELEGATE = re.compile(r"(필요한|세부|구체적인|그\s*밖의|그\s*밖에)[^.。\n]{0,60}?(사항|기준|방법|절차|금액|요금|시간)[은는]?\s*"
+                      r"(시장|구청장|시행규칙|규칙)(이|으로|에서)?\s*(따로\s*|별도로\s*)?정한다")
+DELEGATE_SYSTEM = """너는 조례 해석 도우미다. 시민 질문과, 조례에서 '그 밖에 필요한 사항은 시장(또는 규칙)이 따로 정한다'고 맡긴 조항 후보를 본다.
+covers=true는 다음을 모두 만족할 때만이다.
+1) 질문이 묻는 세부 사항(시간·금액·기준·방법 등)이 근거 조항 어디에도 직접 적혀 있지 않다.
+2) 후보 조항이 질문한 바로 그 시설·제도·사무(예: 반려견 놀이터의 설치·운영)에 필요한 사항을 맡긴다. 대상이 다르면 false.
+3) 질문이 법률·국가 사무나 다른 기관 소관이 아니다.
+asked: 질문이 물은 세부를 명사구로 (예: "반려견 놀이터 운영 시간").
+matter: 조항이 맡긴 대상을 조항 원문 표현으로 (예: "반려견 놀이터의 설치 및 운영").
+check_where: 시민이 구체적인 내용을 확인할 곳을 일반적인 표현으로 (예: "서울시나 해당 놀이터 안내"). 기관명·전화번호를 지어내지 않는다."""
+DELEGATE_EXCLUDE = ("out_of_scope", "district_question", "low_score", "name_mismatch", "annex_only", "gu_scope", "unspecified_article")
+_DELEGATE_STOP = {"설치", "운영", "관리", "사항", "필요한", "이용", "시설", "등의", "및"}
+
+
+def _delegate_schema(labels):
+    return {"type": "json_schema", "json_schema": {"name": "delegation", "strict": True, "schema": {
+        "type": "object", "properties": {
+            "covers": {"type": "boolean"}, "label": {"type": "string", "enum": labels},
+            "asked": {"type": "string"}, "matter": {"type": "string"},
+            "delegate": {"type": "string", "enum": ["시장", "구청장", "규칙", "시행규칙"]},
+            "check_where": {"type": "string"}},
+        "required": ["covers", "label", "asked", "matter", "delegate", "check_where"], "additionalProperties": False}}}
+
+
+def _josa(word, pair):
+    ch = re.sub(r"[\s)\]」』\"'’”]+$", "", word)[-1:]      # 괄호·따옴표 뒤면 그 앞 글자로 판단
+    if ch and "가" <= ch <= "힣":
+        return pair[0] if (ord(ch) - 0xAC00) % 28 else pair[1]
+    return pair[0]
+
+
+def _delegation_answer(question, hits):
+    """확인 불가로 끝난 질문에서, 질문 대상의 세부를 시장·규칙에 맡긴 위임 조항이 근거에 있으면 그 조항으로 답합니다."""
+    cands = list({h["label"]: h for h in hits[:config.MAX_CONTEXT] if DELEGATE.search(h.get("text", ""))}.values())[:6]
+    if not cands:
+        return None
+    import upstage
+    ev = "\n\n".join(f"[{h['label']}]\n{h['text'][:900]}" for h in hits[:config.MAX_CONTEXT])
+    try:
+        out = json.loads(upstage.chat(
+            [{"role": "system", "content": DELEGATE_SYSTEM},
+             {"role": "user", "content": f"[질문]\n{question}\n\n[위임 조항 후보]\n" + "\n".join(f"- {h['label']}" for h in cands)
+                                         + f"\n\n[근거 조항 전체]\n{ev}"}],
+            response_format=_delegate_schema([h["label"] for h in cands]), timeout=30))
+    except Exception:  # noqa: BLE001
+        return None
+    h = next((c for c in cands if c["label"] == out.get("label")), None)
+    if not out.get("covers") or not h or out.get("delegate", "") not in h["text"]:
+        return None
+    # 맡긴 대상이 질문과 조항 원문에 실제로 나와야 함 (다른 시설의 위임 조항으로 대신 답하지 않게)
+    words = {w for w in re.findall(r"[가-힣]{2,}", out.get("matter", "")) if w not in _DELEGATE_STOP}
+    flat_q, flat_t = re.sub(r"\s+", "", question), re.sub(r"\s+", "", h["text"])
+    if not words or not any(w[:3] in flat_q for w in words) or not any(w[:3] in flat_t for w in words):
+        return None
+    m = re.match(r"^(.*?)\s+((?:제\d+조|별표).*)$", h["label"])
+    if not m:
+        return None
+    law = re.sub(r"\s*\(\d{4}-\d{2}-\d{2} 시행본\)", "", m.group(1)).strip()
+    asked = out["asked"].strip()
+    matter = re.sub(r"\s*(에\s*)?(그\s*밖에\s*)?(필요한\s*)?(사항|것)$", "", out["matter"].strip())   # "~에 필요한 사항" 중복 방지
+    where = re.sub(r"\s*에서$", "", out["check_where"].strip()) or "서울시나 담당 부서 안내"
+    dp = {"시장": "시장이", "구청장": "구청장이", "규칙": "규칙으로", "시행규칙": "시행규칙으로"}[out["delegate"]]
+    ans = (f"조례에는 {asked}{_josa(asked, ('이', '가'))} 정해져 있지 않습니다. 「{law}」 {m.group(2)}에 따라 "
+           f"{matter}에 필요한 사항은 {dp} 따로 정하므로, 구체적인 내용은 {where}에서 확인해 주세요.")
+    return {"answer": ans, "citation": [h["label"]], "source_url": h.get("source_url", ""),
+            "effective_date": h.get("effective_date", ""), "delegated": True}
+
+
 def answer(question, trace=None, convert=False):
+    """확인 불가로 끝나면 위임 조항 답변을 시도합니다 (조례가 세부를 시장·규칙에 맡긴 경우). 나머지는 _answer_core."""
+    trace = [] if trace is None else trace
+    t0 = time.time()
+    box = {}
+    res = _answer_core(question, trace, convert, box)
+    if res["answer"] == "확인 불가" and box.get("hits") and config.USE_VERIFY             and not any(t.startswith(DELEGATE_EXCLUDE) for t in trace) and time.time() - t0 < 70:
+        d = _delegation_answer(question, box["hits"])
+        if d:
+            trace.append("delegated")
+            d.pop("delegated", None)
+            return d
+    return res
+
+
+def _answer_core(question, trace=None, convert=False, box=None):
     """trace에 리스트를 넘기면 시도별 결과(성공/실패 이유)를 적어 줍니다. 진단용.
     convert=True는 웹 화면용: "10분 요금"처럼 요금표 단위의 배수를 물으면 환산한 금액으로 답합니다.
     제출용 POST /ask는 False(조례에 적힌 금액 그대로)."""
@@ -2065,6 +2179,8 @@ def answer(question, trace=None, convert=False):
         trace.append("district_question")
         return dict(UNKNOWN)
     hits = _anchor_law_only(question, _drop_cross_domain(question, retrieve(question)))
+    if box is not None:
+        box["hits"] = hits
 
     # 검증 ①: 검색 단계에서 이미 관련 조문이 없어 보이면 바로 '확인 불가'
     if config.USE_VERIFY and hits and hits[0]["cos"] is not None and hits[0]["cos"] < config.MIN_SCORE:
@@ -2108,6 +2224,8 @@ def answer(question, trace=None, convert=False):
             have = {h["id"] for h in hits}
             extra = [h for h in _anchor_law_only(question, _drop_cross_domain(question, retrieve(question))) if h["id"] not in have]
             hits = hits + extra[:max(0, config.MAX_CONTEXT - len(hits))]
+            if box is not None:
+                box["hits"] = hits
         except Exception:  # noqa: BLE001  재검색 실패면 1차 근거로 그대로 2차
             pass
     left = config.RETRY_DEADLINE_SEC - (time.time() - t0)
