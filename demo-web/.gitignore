@@ -1,0 +1,7 @@
+.env
+__pycache__/
+logs/
+results/
+data/cache/
+data/annex_files/
+data/tickets.json
